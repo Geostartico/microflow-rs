@@ -1,12 +1,13 @@
 use crate::activation::TokenFusedActivation;
 use crate::buffer::TokenBuffer2D;
-use crate::quantize::TokenQuantized;
+use crate::quantize::{AddAttributes, TokenQuantized};
 use crate::tensor::{TokenTensor2D, TokenTensor4D, TokenTensorViewPadding};
 use crate::tflite_flatbuffers::tflite::{Buffer, Operator, Tensor, TensorType};
 use flatbuffers::{ForwardsUOffset, Vector};
 use nalgebra::DMatrix;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
+use syn::{parse_quote, ItemStruct};
 
 /// Represents the tokenized version of the `DepthwiseConv2D` operator.
 pub(crate) struct TokenDepthwiseConv2D<T: TokenQuantized> {
@@ -34,7 +35,7 @@ pub(crate) fn parse_indexed(
     buffers: Vector<ForwardsUOffset<Buffer>>,
     index: usize,
     layer_index : i32,
-) -> Box<dyn ToTokens> {
+) -> Box<dyn AddAttributes> {
     let inputs = operator.inputs().unwrap();
     let input_type = tensors.get(inputs.get(0) as usize).type_();
     match input_type {
@@ -145,11 +146,51 @@ impl<T: TokenQuantized> TokenDepthwiseConv2D<T> {
             })),
         )
     }
+
 }
 
+impl<T: TokenQuantized> AddAttributes for TokenDepthwiseConv2D<T> {
+    fn add_attrs(&self, attrs: &mut ItemStruct) {
+        let filters_ident = format_ident!("weights{}", self.layer_index as usize);
+        let filters_type = self.weights.type_tokens();
+        let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
+        let dim00 = self.constants.0.shape().0;
+        let dim01 = self.constants.0.shape().1;
+        let dim10 = self.constants.1.shape().0;
+        let dim11 = self.constants.1.shape().1;
+        let constants_field_type : syn::Type = parse_quote!{
+            ( Buffer2D<f32, #dim00, #dim01>, Buffer2D<f32, #dim10, #dim11>,)
+        };
+
+        let constants_field: syn::Field = syn::parse_quote! {
+            #constants_field_name: #constants_field_type
+        };
+        let filters_field: syn::Field = syn::parse_quote! {
+            #filters_ident: #filters_type
+        };
+        match &mut attrs.fields {
+            syn::Fields::Named(ref mut fields_named) => {
+                fields_named.named.push(constants_field);
+                fields_named.named.push(filters_field);
+            },
+            _ => panic!("add_fields only works with structs with named fields"),
+        }
+    }
+    fn define_members(&self, declarations: &mut TokenStream2) {
+        let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
+        let filters_ident = format_ident!("weights{}", self.layer_index as usize);
+        let filters = &self.weights;
+        let (constants_0, constants_1) = &self.constants;
+        let ts = quote! {
+            #filters_ident : #filters,
+            #constants_field_name : (#constants_0, #constants_1),
+        };
+        ts.to_tokens(declarations);
+    }
+}
 impl<T: TokenQuantized> ToTokens for TokenDepthwiseConv2D<T> {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
-        let weights_ident = format_ident!("weights_{}", self.index);
+        let weights_ident = format_ident!("weights{}", self.index);
         let weights_type = self.weights.type_tokens();
         let weights = &self.weights;
         let output_shape = &self.output.shape;
@@ -159,14 +200,15 @@ impl<T: TokenQuantized> ToTokens for TokenDepthwiseConv2D<T> {
         let view_padding = self.view_padding;
         let (strides_0, strides_1) = self.strides;
         let (constants_0, constants_1) = &self.constants;
+        let reference_tok = if self.layer_index >= 0 {quote!{&}} else {quote!{}};
         let output_name = if self.layer_index >= 0 {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
         let input_name = if self.layer_index > 0 {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
-        let func_name = if self.layer_index >= 0 {format_ident!("microflow::ops::depthwise_conv_2d_borrow")} else {format_ident!("microflow::ops::depthwise_conv_2d")};
+        let func_name : syn::Path = if self.layer_index >= 0 {parse_quote!(microflow::ops::depthwise_conv_2d_borrow)} else {parse_quote!(microflow::ops::depthwise_conv_2d)};
         let ts = quote! {
             const #weights_ident: #weights_type = #weights;
             let #output_name: microflow::tensor::Tensor4D<_, #(#output_shape),*, 1usize> =
                 #func_name(
-                    #input_name,
+                    #reference_tok #input_name,
                     &#weights_ident,
                     [#(#output_scale),*],
                     [#(#output_zero_point),*],
@@ -213,6 +255,7 @@ mod tests {
                 TokenBuffer2D::from(dmatrix![21., 22.]),
             ),
             index: 0,
+            layer_index: -1,
         }
     }
 

@@ -1,12 +1,15 @@
+use std::ops::Add;
+
 use flatbuffers::{ForwardsUOffset, Vector};
 use nalgebra::{convert_ref, DMatrix};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
 use simba::scalar::SupersetOf;
+use syn::{parse_quote, ItemStruct};
 
 use crate::activation::TokenFusedActivation;
 use crate::buffer::TokenBuffer2D;
-use crate::quantize::TokenQuantized;
+use crate::quantize::{AddAttributes, TokenQuantized};
 use crate::tensor::TokenTensor2D;
 use crate::tflite_flatbuffers::tflite::{Buffer, Operator, Tensor, TensorType};
 
@@ -36,7 +39,7 @@ pub(crate) fn parse_indexed(
     buffers: Vector<ForwardsUOffset<Buffer>>,
     index: usize,
     layer_index: i32
-) -> Box<dyn ToTokens> {
+) -> Box<dyn AddAttributes> {
     let inputs = operator.inputs().unwrap();
     let input_type = tensors.get(inputs.get(0) as usize).type_();
     match input_type {
@@ -149,6 +152,47 @@ impl<T: TokenQuantized> TokenFullyConnected<T> {
                 * i32::from_subset(&weights.zero_point[0]),
         )
     }
+
+}
+impl<T: TokenQuantized> AddAttributes for TokenFullyConnected<T>{
+    fn add_attrs(&self, attrs: &mut ItemStruct) {
+        let filters_ident = format_ident!("weights{}", self.layer_index as usize);
+        let filters_type = self.weights.type_tokens();
+        let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
+        let (constants_0, _, constants_2, _) = &self.constants;
+        let dim00 = constants_0.shape().0;
+        let dim01 = constants_0.shape().1;
+        let dim10 = constants_2.shape().0;
+        let dim11 = constants_2.shape().1;
+        let constants_field_type : syn::Type = parse_quote!{
+            (SMatrix<f32,#dim00,#dim01>,f32,SMatrix<i32,#dim10,#dim11>,i32)
+        };
+
+        let constants_field: syn::Field = syn::parse_quote! {
+            #constants_field_name: #constants_field_type
+        };
+        let filters_field: syn::Field = syn::parse_quote! {
+            #filters_ident: #filters_type
+        };
+        match &mut attrs.fields {
+            syn::Fields::Named(ref mut fields_named) => {
+                fields_named.named.push(constants_field);
+                fields_named.named.push(filters_field);
+            },
+            _ => panic!("add_fields only works with structs with named fields"),
+        }
+    }
+    fn define_members(&self, declarations: &mut TokenStream2) {
+        let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
+        let filters_ident = format_ident!("weights{}", self.layer_index as usize);
+        let filters = &self.weights;
+        let (constants_0, constants_1, constants_2, constants_3) = &self.constants;
+        let ts = quote! {
+            #filters_ident : #filters,
+            #constants_field_name : (#constants_0, #constants_1, #constants_2, #constants_3),
+        };
+        ts.to_tokens(declarations);
+    }
 }
 
 impl<T: TokenQuantized> ToTokens for TokenFullyConnected<T> {
@@ -158,7 +202,7 @@ impl<T: TokenQuantized> ToTokens for TokenFullyConnected<T> {
         } else {
             quote!()
         };
-        let weights_ident = format_ident!("weights_{}", self.index);
+        let weights_ident = format_ident!("weights{}", self.index);
         let weights_type = self.weights.type_tokens();
         let weights = &self.weights;
         let output_shape = &self.output.shape;
@@ -166,15 +210,16 @@ impl<T: TokenQuantized> ToTokens for TokenFullyConnected<T> {
         let output_zero_point = self.output.zero_point[0];
         let fused_activation = self.fused_activation;
         let (constants_0, constants_1, constants_2, constants_3) = &self.constants;
+        let reference_tok = if self.layer_index >= 0 {quote!{&}} else {quote!{}};
         let output_name = if self.layer_index >= 0 {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
         let input_name = if self.layer_index > 0 {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
-        let func_name = if self.layer_index >= 0 {format_ident!("microflow::ops::fully_connected_borrow")} else {format_ident!("microflow::ops::fully_connected")};
+        let func_name : syn::Path = if self.layer_index >= 0 {parse_quote!(microflow::ops::fully_connected_borrow)} else {parse_quote!(microflow::ops::fully_connected)};
 
         let ts = quote! {
             const #weights_ident: #weights_type = #weights;
             let #output_name: microflow::tensor::Tensor2D<_, #(#output_shape),*, 1usize> =
                 #func_name(
-                    #input_name #reshape,
+                    #reference_tok (#input_name #reshape),
                     &#weights_ident,
                     [#output_scale],
                     [#output_zero_point],

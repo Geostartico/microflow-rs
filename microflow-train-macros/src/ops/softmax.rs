@@ -1,9 +1,10 @@
-use crate::quantize::TokenQuantized;
+use crate::quantize::{AddAttributes, TokenQuantized};
 use crate::tensor::TokenTensor2D;
 use crate::tflite_flatbuffers::tflite::{Operator, Tensor, TensorType};
 use flatbuffers::{ForwardsUOffset, Vector};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident,quote, ToTokens};
+use syn::{parse_quote};
 
 /// Represents the tokenized version of the `Softmax` operator.
 pub(crate) struct TokenSoftmax<T: TokenQuantized> {
@@ -21,7 +22,7 @@ pub(crate) fn parse_indexed(
     operator: Operator,
     tensors: Vector<ForwardsUOffset<Tensor>>,
     layer_index: i32
-) -> Box<dyn ToTokens> {
+) -> Box<dyn AddAttributes> {
     let inputs = operator.inputs().unwrap();
     let input_type = tensors.get(inputs.get(0) as usize).type_();
     match input_type {
@@ -64,6 +65,10 @@ impl<T: TokenQuantized> TokenSoftmax<T> {
         Self { output , layer_index}
     }
 }
+impl<T: TokenQuantized> AddAttributes for TokenSoftmax<T>{
+    fn add_attrs(&self, attrs: &mut syn::ItemStruct) {}
+    fn define_members(&self, _: &mut TokenStream2) {}
+}
 
 impl<T: TokenQuantized> ToTokens for TokenSoftmax<T> {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
@@ -72,9 +77,11 @@ impl<T: TokenQuantized> ToTokens for TokenSoftmax<T> {
         let output_zero_point = &self.output.zero_point;
         let output_name = if self.layer_index >= 0 {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
         let input_name = if self.layer_index > 0 {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
+        let func_name : syn::Path = if self.layer_index >= 0 {parse_quote!(microflow::ops::softmax_borrow)} else {parse_quote!(microflow::ops::softmax)};
+        let reference_tok = if self.layer_index >= 0 {quote!{&}} else {quote!{}};
         let ts = quote! {
             let #output_name: microflow::tensor::Tensor2D<_, #(#output_shape),*, 1usize> =
-                microflow::ops::softmax(#input_name, [#(#output_scale),*], [#(#output_zero_point),*]);
+                #func_name(#reference_tok #input_name, [#(#output_scale),*], [#(#output_zero_point),*]);
         };
         ts.to_tokens(tokens);
     }

@@ -1,13 +1,13 @@
 use crate::activation::TokenFusedActivation;
 use crate::buffer::TokenBuffer2D;
-use crate::quantize::TokenQuantized;
+use crate::quantize::{AddAttributes, TokenQuantized};
 use crate::tensor::{TokenTensor2D, TokenTensor4D, TokenTensorViewPadding};
 use crate::tflite_flatbuffers::tflite::{Buffer, Operator, Tensor, TensorType};
 use flatbuffers::{ForwardsUOffset, Vector};
 use nalgebra::DMatrix;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
-use syn::Attribute;
+use syn::{parse_quote, Attribute, ItemStruct};
 
 /// Represents the tokenized version of the `Conv2D` operator.
 pub(crate) struct TokenConv2D<T: TokenQuantized> {
@@ -36,7 +36,7 @@ pub(crate) fn parse_indexed(
     buffers: Vector<ForwardsUOffset<Buffer>>,
     index: usize,
     layer_index: i32,
-) -> Box<dyn ToTokens> {
+) -> Box<dyn AddAttributes> {
     let inputs = operator.inputs().unwrap();
     let input_type = tensors.get(inputs.get(0) as usize).type_();
     match input_type {
@@ -137,22 +137,51 @@ impl<T: TokenQuantized> TokenConv2D<T> {
             })),
         )
     }
-    fn add_attrs(&self, attrs: &mut Vec<Attribute>){
-        let filters_ident = format_ident!("filters_{}", self.index);
+}
+impl<T : TokenQuantized> AddAttributes for TokenConv2D<T>{
+    fn add_attrs(&self, attrs: &mut ItemStruct) {
+        let filters_ident = format_ident!("filters{}", self.layer_index as usize);
         let filters_type = self.filters.type_tokens();
-        let constants = &self.constants;
-        let constants_type_ident = format_ident!("( Buffer2D<f32, {}, 1>, Buffer2D<f32, {}, 1>,)",self.filters.shape.get(0).unwrap(),self.filters.shape.get(0).unwrap());
+        let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
+        let dim00 = self.constants.0.shape().0;
+        let dim01 = self.constants.0.shape().1;
+        let dim10 = self.constants.1.shape().0;
+        let dim11 = self.constants.1.shape().1;
+        let constants_field_type : syn::Type = parse_quote!{
+            ( Buffer2D<f32, #dim00, #dim01>, Buffer2D<f32, #dim10, #dim11>,)
+        };
 
-        let constants_type = constants.0;
-        attrs.push(syn::parse_quote!{
-            #filters_ident : #filters_type
-        });
+        let constants_field: syn::Field = syn::parse_quote! {
+            #constants_field_name: #constants_field_type
+        };
+        let filters_field: syn::Field = syn::parse_quote! {
+            #filters_ident: #filters_type
+        };
+        match &mut attrs.fields {
+            syn::Fields::Named(ref mut fields_named) => {
+                fields_named.named.push(constants_field);
+                fields_named.named.push(filters_field);
+            },
+            _ => panic!("add_fields only works with structs with named fields"),
+        }
     }
+    fn define_members(&self, declarations: &mut TokenStream2) {
+        let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
+        let filters_ident = format_ident!("filters{}", self.layer_index as usize);
+        let filters = &self.filters;
+        let (constants_0, constants_1) = &self.constants;
+        let ts = quote! {
+            #filters_ident : #filters,
+            #constants_field_name : (#constants_0, #constants_1),
+        };
+        ts.to_tokens(declarations);
+    }
+
 }
 
 impl<T: TokenQuantized> ToTokens for TokenConv2D<T> {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
-        let filters_ident = format_ident!("filters_{}", self.index);
+        let filters_ident = format_ident!("filters{}", self.index);
         let filters_type = self.filters.type_tokens();
         let filters = &self.filters;
         let output_shape = &self.output.shape;
@@ -162,14 +191,15 @@ impl<T: TokenQuantized> ToTokens for TokenConv2D<T> {
         let view_padding = self.view_padding;
         let (strides_0, strides_1) = self.strides;
         let (constants_0, constants_1) = &self.constants;
+        let reference_tok = if self.layer_index >= 0 {quote!{&}} else {quote!{}};
         let output_name = if self.layer_index >= 0 {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
         let input_name = if self.layer_index > 0 {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
-        let func_name = if self.layer_index >= 0 {format_ident!("microflow::ops::conv_2d_borrow")} else {format_ident!("microflow::ops::conv_2d")};
+        let func_name : syn::Path = if self.layer_index >= 0 {parse_quote!(microflow::ops::conv_2d_borrow)} else {parse_quote!(microflow::ops::conv_2d)};
         let ts = quote! {
             const #filters_ident: #filters_type = #filters;
             let #output_name: microflow::tensor::Tensor4D<_, #(#output_shape),*, 1usize> =
                 #func_name(
-                    #input_name,
+                    #reference_tok #input_name,
                     &#filters_ident,
                     [#(#output_scale),*],
                     [#(#output_zero_point),*],
@@ -222,6 +252,7 @@ mod tests {
                 TokenBuffer2D::from(dmatrix![33., 34.]),
             ),
             index: 0,
+            layer_index: -1,
         }
     }
 

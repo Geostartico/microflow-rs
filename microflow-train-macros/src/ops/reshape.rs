@@ -1,4 +1,4 @@
-use crate::tflite_flatbuffers::tflite::{Operator, Tensor};
+use crate::{tflite_flatbuffers::tflite::{Operator, Tensor}, AddAttributes};
 use flatbuffers::{ForwardsUOffset, Vector};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
@@ -19,7 +19,7 @@ pub(crate) fn parse_indexed(
     operator: Operator,
     tensors: Vector<ForwardsUOffset<Tensor>>,
     layer_index: i32,
-) -> Box<dyn ToTokens> {
+) -> Box<dyn AddAttributes> {
     Box::new(TokenReshape::new(operator, tensors, layer_index))
 }
 
@@ -53,6 +53,10 @@ impl TokenReshape {
             .collect();
         Self { output_shape , layer_index}
     }
+}
+impl AddAttributes for TokenReshape{
+    fn add_attrs(&self, _: &mut syn::ItemStruct) {}
+    fn define_members(&self, _: &mut TokenStream2) {}
 }
 
 impl ToTokens for TokenReshape {

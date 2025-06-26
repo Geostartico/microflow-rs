@@ -1,11 +1,12 @@
 use crate::activation::TokenFusedActivation;
-use crate::quantize::TokenQuantized;
+use crate::quantize::{AddAttributes, TokenQuantized};
 use crate::tensor::{TokenTensor4D, TokenTensorViewPadding};
 use crate::tflite_flatbuffers::tflite::{Operator, Tensor, TensorType};
 use flatbuffers::{ForwardsUOffset, Vector};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
 use simba::scalar::SupersetOf;
+use syn::{parse_quote, ItemStruct};
 
 /// Represents the tokenized version of the `AveragePool2D` operator.
 pub(crate) struct TokenAveragePool2D<T: TokenQuantized> {
@@ -29,7 +30,7 @@ pub(crate) fn parse_indexed(
     operator: Operator,
     tensors: Vector<ForwardsUOffset<Tensor>>,
     index: i32,
-) -> Box<dyn ToTokens> {
+) -> Box<dyn AddAttributes> {
     let inputs = operator.inputs().unwrap();
     let input_type = tensors.get(inputs.get(0) as usize).type_();
     match input_type {
@@ -111,13 +112,14 @@ impl<T: TokenQuantized> ToTokens for TokenAveragePool2D<T> {
         let view_padding = self.view_padding;
         let (strides_0, strides_1) = self.strides;
         let (constants_0, constants_1) = self.constants;
+        let reference_tok = if self.layer_index >= 0 {quote!{&}} else {quote!{}};
         let output_name = if self.layer_index >= 0 {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
         let input_name = if self.layer_index > 0 {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
-        let func_name = if self.layer_index >= 0 {format_ident!("microflow::ops::average_pool_2d_borrow")} else {format_ident!("microflow::ops::average_pool_2d")};
+        let func_name : syn::Path = if self.layer_index >= 0 {parse_quote!(microflow::ops::average_pool_2d_borrow)} else {parse_quote!(microflow::ops::average_pool_2d)};
         let ts = quote! {
             let #output_name: microflow::tensor::Tensor4D<_, #(#output_shape),*, 1usize> =
                 #func_name(
-                    #input_name,
+                    #reference_tok #input_name,
                     (nalgebra::Const::<#filter_shape_0>, nalgebra::Const::<#filter_shape_1>),
                     [#(#output_scale),*],
                     [#(#output_zero_point),*],
@@ -131,6 +133,11 @@ impl<T: TokenQuantized> ToTokens for TokenAveragePool2D<T> {
         };
         ts.to_tokens(tokens);
     }
+}
+
+impl<T: TokenQuantized> AddAttributes for TokenAveragePool2D<T>{
+    fn add_attrs(&self, _: &mut ItemStruct) {}
+    fn define_members(&self, _: &mut proc_macro2::TokenStream) {}
 }
 
 #[cfg(test)]

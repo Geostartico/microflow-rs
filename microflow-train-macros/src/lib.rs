@@ -8,10 +8,11 @@ extern crate proc_macro;
 
 use proc_macro::TokenStream;
 use proc_macro_error::{abort_call_site, proc_macro_error};
+use quantize::AddAttributes;
 use std::fs;
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{quote, ToTokens};
+use quote::{format_ident, quote, ToTokens};
 use syn::{parse_macro_input, Attribute, ItemStruct};
 
 use crate::tflite_flatbuffers::tflite::TensorType;
@@ -49,9 +50,6 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as Args);
     let item = parse_macro_input!(item as ItemStruct);
     let mut item = item.clone();
-    item.attrs.push(syn::parse_quote!{
-        whaat : i32
-    });
 
     let buf = fs::read(args.path.value()).unwrap_or_else(|_| {
         abort_call_site!(
@@ -64,7 +62,6 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
     });
     let layers_to_train : usize = args.num_train_layers.base10_parse().unwrap();
 
-    let ident = &item.ident;
 
     let subgraph = model.subgraphs().unwrap().get(0);
     let tensors = subgraph.tensors().unwrap();
@@ -120,6 +117,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let operators = subgraph.operators().unwrap();
     let mut layers = TokenStream2::new();
+    let mut new_declarations = TokenStream2::new();
     for (index, operator) in operators.iter().enumerate() {
         let layer_num = index as i32 - (operators.len() as i32 - layers_to_train as i32);
         if layer_num < 0 {
@@ -145,7 +143,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
             layer.to_tokens(&mut layers)
         }
         else {
-            let layer: Box<dyn ToTokens> = match BuiltinOperator(
+            let layer: Box<dyn AddAttributes> = match BuiltinOperator(
                 model
                 .operator_codes()
                 .unwrap()
@@ -161,14 +159,17 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
                 BuiltinOperator::CONV_2D => conv_2d::parse_indexed(operator, tensors, buffers, index,layer_num),
                 BuiltinOperator::AVERAGE_POOL_2D => average_pool_2d::parse_indexed(operator, tensors,layer_num),
                 BuiltinOperator::SOFTMAX => softmax::parse_indexed(operator, tensors,layer_num),
-                BuiltinOperator::RESHAPE => Box::new(reshape::parse_indexed(operator, tensors,layer_num)),
+                BuiltinOperator::RESHAPE => reshape::parse_indexed(operator, tensors,layer_num),
                 unsupported_op => abort_call_site!("unsupported operator: {:?}", unsupported_op),
             };
+            layer.add_attrs(&mut item);
+            layer.define_members(&mut new_declarations);
             layer.to_tokens(&mut layers)
         }
 
     }
 
+    let ident = &item.ident;
     let output = tensors.get(subgraph.outputs().unwrap().get(0) as usize);
     let mut output_shape: Vec<_> = output.shape().unwrap().iter().map(|e| e as usize).collect();
     if output_shape.len() == 1 {
@@ -190,9 +191,15 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
         _ => unimplemented!(),
     };
 
+    let output_ident = format_ident!("input{}", layers_to_train-1);
     let ts = quote! {
         #item
         impl #ident {
+            pub fn new() -> Self {
+                #ident {
+                    #new_declarations
+                }
+            }
             pub fn predict(input: microflow::buffer::#input_buffer<f32, #(#input_shape),*>) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
                 let input = microflow::tensor::#input_tensor::quantize(input, [#(#input_scale),*], [#(#input_zero_point),*]);
                 Self::predict_inner(input).dequantize()
@@ -205,7 +212,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
 
             fn predict_inner(input: microflow::tensor::#input_tensor<#input_type, #(#input_shape),*, 1usize>) -> microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize> {
                 #layers
-                input
+                #output_ident
             }
         }
     };
