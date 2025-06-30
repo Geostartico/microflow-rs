@@ -8,12 +8,12 @@ extern crate proc_macro;
 
 use proc_macro::TokenStream;
 use proc_macro_error::{abort_call_site, proc_macro_error};
-use quantize::AddAttributes;
+use quantize::TrainToTokens;
 use std::fs;
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
-use syn::{parse_macro_input, Attribute, ItemStruct};
+use syn::{parse_macro_input, ItemStruct};
 
 use crate::tflite_flatbuffers::tflite::TensorType;
 use ops::*;
@@ -117,6 +117,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let operators = subgraph.operators().unwrap();
     let mut layers = TokenStream2::new();
+    let mut layers_train = TokenStream2::new();
     let mut new_declarations = TokenStream2::new();
     for (index, operator) in operators.iter().enumerate() {
         let layer_num = index as i32 - (operators.len() as i32 - layers_to_train as i32);
@@ -143,7 +144,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
             layer.to_tokens(&mut layers)
         }
         else {
-            let layer: Box<dyn AddAttributes> = match BuiltinOperator(
+            let mut layer: Box<dyn TrainToTokens> = match BuiltinOperator(
                 model
                 .operator_codes()
                 .unwrap()
@@ -164,7 +165,9 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
             };
             layer.add_attrs(&mut item);
             layer.define_members(&mut new_declarations);
-            layer.to_tokens(&mut layers)
+            layer.to_tokens(&mut layers);
+            layer.switch_train();
+            layer.to_tokens(&mut layers_train);
         }
 
     }
@@ -200,18 +203,32 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
                     #new_declarations
                 }
             }
-            pub fn predict(input: microflow::buffer::#input_buffer<f32, #(#input_shape),*>) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
+            pub fn predict(&self, input: microflow::buffer::#input_buffer<f32, #(#input_shape),*>) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
                 let input = microflow::tensor::#input_tensor::quantize(input, [#(#input_scale),*], [#(#input_zero_point),*]);
-                Self::predict_inner(input).dequantize()
+                self.predict_inner(input).dequantize()
             }
 
-            pub fn predict_quantized(input: microflow::buffer::#input_buffer<#input_type, #(#input_shape),*>) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
+            pub fn predict_quantized(&self, input: microflow::buffer::#input_buffer<#input_type, #(#input_shape),*>) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
                 let input = microflow::tensor::#input_tensor::new(input, [#(#input_scale),*], [#(#input_zero_point),*]);
-                Self::predict_inner(input).dequantize()
+                self.predict_inner(input).dequantize()
             }
 
-            fn predict_inner(input: microflow::tensor::#input_tensor<#input_type, #(#input_shape),*, 1usize>) -> microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize> {
+            fn predict_inner(&self, input: microflow::tensor::#input_tensor<#input_type, #(#input_shape),*, 1usize>) -> microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize> {
                 #layers
+                input
+            }
+            pub fn predict_train(&mut self, input: microflow::buffer::#input_buffer<f32, #(#input_shape),*>) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
+                let input = microflow::tensor::#input_tensor::quantize(input, [#(#input_scale),*], [#(#input_zero_point),*]);
+                self.predict_inner(input).dequantize()
+            }
+
+            pub fn predict_quantized_train(&mut self, input: microflow::buffer::#input_buffer<#input_type, #(#input_shape),*>) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
+                let input = microflow::tensor::#input_tensor::new(input, [#(#input_scale),*], [#(#input_zero_point),*]);
+                self.predict_inner(input).dequantize()
+            }
+
+            fn predict_inner_train(&mut self, input: microflow::tensor::#input_tensor<#input_type, #(#input_shape),*, 1usize>) -> microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize> {
+                #layers_train
                 #output_ident
             }
         }

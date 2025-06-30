@@ -22,9 +22,12 @@ include = [
 
 [dependencies]
 microflow-macros = { version = "0.1", path = "microflow-macros" }
+microflow-train-macros = { version = "0.1", path = "microflow-train-macros" }
 nalgebra = { version = "0.32", default-features = false, features = ["macros"] }
 simba = { version = "0.8", default-features = false }
 libm = "0.2"
+cargo-expand = "1.0.110"
+num-traits = "0.2.19"
 
 [dev-dependencies]
 csv = "1.2"
@@ -43,7 +46,7 @@ name = "person_detect"
 harness = false
 
 [workspace]
-members = ["microflow-macros"]
+members = ["microflow-macros", "microflow-train-macros"]
 exclude = ["examples"]
 
 [patch.crates-io]

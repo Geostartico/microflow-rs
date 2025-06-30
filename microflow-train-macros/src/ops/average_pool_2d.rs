@@ -1,5 +1,5 @@
 use crate::activation::TokenFusedActivation;
-use crate::quantize::{AddAttributes, TokenQuantized};
+use crate::quantize::{TrainToTokens, TokenQuantized};
 use crate::tensor::{TokenTensor4D, TokenTensorViewPadding};
 use crate::tflite_flatbuffers::tflite::{Operator, Tensor, TensorType};
 use flatbuffers::{ForwardsUOffset, Vector};
@@ -17,6 +17,7 @@ pub(crate) struct TokenAveragePool2D<T: TokenQuantized> {
     pub(crate) strides: (usize, usize),
     pub(crate) constants: (f32, f32),
     pub(crate) layer_index: i32,
+    pub(crate) train: bool,
 }
 
 /// Parses the [`TokenAveragePool2D`] struct from the given operator.
@@ -30,7 +31,7 @@ pub(crate) fn parse_indexed(
     operator: Operator,
     tensors: Vector<ForwardsUOffset<Tensor>>,
     index: i32,
-) -> Box<dyn AddAttributes> {
+) -> Box<dyn TrainToTokens> {
     let inputs = operator.inputs().unwrap();
     let input_type = tensors.get(inputs.get(0) as usize).type_();
     match input_type {
@@ -83,7 +84,8 @@ impl<T: TokenQuantized> TokenAveragePool2D<T> {
             view_padding: options.padding().into(),
             strides: (options.stride_h() as usize, options.stride_w() as usize),
             constants,
-            layer_index:index
+            layer_index:index,
+            train:false,
         }
     }
 
@@ -112,10 +114,10 @@ impl<T: TokenQuantized> ToTokens for TokenAveragePool2D<T> {
         let view_padding = self.view_padding;
         let (strides_0, strides_1) = self.strides;
         let (constants_0, constants_1) = self.constants;
-        let reference_tok = if self.layer_index >= 0 {quote!{&}} else {quote!{}};
-        let output_name = if self.layer_index >= 0 {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
-        let input_name = if self.layer_index > 0 {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
-        let func_name : syn::Path = if self.layer_index >= 0 {parse_quote!(microflow::ops::average_pool_2d_borrow)} else {parse_quote!(microflow::ops::average_pool_2d)};
+        let reference_tok = if self.layer_index >= 0 && self.train {quote!{&}} else {quote!{}};
+        let output_name = if self.layer_index >= 0 && self.train {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
+        let input_name = if self.layer_index > 0 && self.train {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
+        let func_name : syn::Path = if self.layer_index >= 0 && self.train {parse_quote!(microflow::ops::average_pool_2d_borrow)} else {parse_quote!(microflow::ops::average_pool_2d)};
         let ts = quote! {
             let #output_name: microflow::tensor::Tensor4D<_, #(#output_shape),*, 1usize> =
                 #func_name(
@@ -135,9 +137,12 @@ impl<T: TokenQuantized> ToTokens for TokenAveragePool2D<T> {
     }
 }
 
-impl<T: TokenQuantized> AddAttributes for TokenAveragePool2D<T>{
+impl<T: TokenQuantized> TrainToTokens for TokenAveragePool2D<T>{
     fn add_attrs(&self, _: &mut ItemStruct) {}
     fn define_members(&self, _: &mut proc_macro2::TokenStream) {}
+    fn switch_train(&mut self) {
+        self.train = !self.train;
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +164,7 @@ mod tests {
             strides: (1, 1),
             constants: (3., 4.),
             layer_index: -1,
+            train: false,
         }
     }
 

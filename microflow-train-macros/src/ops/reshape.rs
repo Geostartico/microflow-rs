@@ -1,4 +1,4 @@
-use crate::{tflite_flatbuffers::tflite::{Operator, Tensor}, AddAttributes};
+use crate::{quantize::TrainToTokens, tflite_flatbuffers::tflite::{Operator, Tensor}};
 use flatbuffers::{ForwardsUOffset, Vector};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
@@ -7,6 +7,7 @@ use quote::{format_ident, quote, ToTokens};
 pub(crate) struct TokenReshape {
     pub(crate) output_shape: Vec<usize>,
     pub(crate) layer_index: i32,
+    pub(crate) train: bool,
 }
 
 /// Parses the [`TokenReshape`] struct from the given operator.
@@ -19,7 +20,7 @@ pub(crate) fn parse_indexed(
     operator: Operator,
     tensors: Vector<ForwardsUOffset<Tensor>>,
     layer_index: i32,
-) -> Box<dyn AddAttributes> {
+) -> Box<dyn TrainToTokens> {
     Box::new(TokenReshape::new(operator, tensors, layer_index))
 }
 
@@ -51,12 +52,15 @@ impl TokenReshape {
             .iter()
             .map(|e| e as usize)
             .collect();
-        Self { output_shape , layer_index}
+        Self { output_shape , layer_index, train:false}
     }
 }
-impl AddAttributes for TokenReshape{
+impl TrainToTokens for TokenReshape{
     fn add_attrs(&self, _: &mut syn::ItemStruct) {}
     fn define_members(&self, _: &mut TokenStream2) {}
+    fn switch_train(&mut self) {
+        self.train = !self.train;
+    }
 }
 
 impl ToTokens for TokenReshape {
@@ -67,8 +71,8 @@ impl ToTokens for TokenReshape {
             4 => quote!(Tensor4D),
             _ => unimplemented!(),
         };
-        let output_name = if self.layer_index >= 0 {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
-        let input_name = if self.layer_index > 0 {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
+        let output_name = if self.layer_index >= 0 && self.train{format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
+        let input_name = if self.layer_index > 0 && self.train{format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
         let ts = quote! {
             let #output_name: microflow::tensor::#output_tensor<_, #(#output_shape),*, 1usize> =
                 microflow::ops::reshape(#input_name);
@@ -85,6 +89,7 @@ mod tests {
         TokenReshape {
             output_shape: vec![2, 3],
             layer_index: -1,
+            train: false,
         }
     }
 

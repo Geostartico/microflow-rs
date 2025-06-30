@@ -1,13 +1,13 @@
 use crate::activation::TokenFusedActivation;
 use crate::buffer::TokenBuffer2D;
-use crate::quantize::{AddAttributes, TokenQuantized};
+use crate::quantize::{TrainToTokens, TokenQuantized};
 use crate::tensor::{TokenTensor2D, TokenTensor4D, TokenTensorViewPadding};
 use crate::tflite_flatbuffers::tflite::{Buffer, Operator, Tensor, TensorType};
 use flatbuffers::{ForwardsUOffset, Vector};
 use nalgebra::DMatrix;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
-use syn::{parse_quote, Attribute, ItemStruct};
+use syn::{parse_quote, ItemStruct};
 
 /// Represents the tokenized version of the `Conv2D` operator.
 pub(crate) struct TokenConv2D<T: TokenQuantized> {
@@ -19,6 +19,7 @@ pub(crate) struct TokenConv2D<T: TokenQuantized> {
     pub(crate) constants: (TokenBuffer2D<f32>, TokenBuffer2D<f32>),
     pub(crate) index: usize,
     pub(crate) layer_index: i32,
+    pub(crate) train: bool,
 }
 
 /// Parses the [`TokenConv2D`] struct from the given operator.
@@ -36,7 +37,7 @@ pub(crate) fn parse_indexed(
     buffers: Vector<ForwardsUOffset<Buffer>>,
     index: usize,
     layer_index: i32,
-) -> Box<dyn AddAttributes> {
+) -> Box<dyn TrainToTokens> {
     let inputs = operator.inputs().unwrap();
     let input_type = tensors.get(inputs.get(0) as usize).type_();
     match input_type {
@@ -104,7 +105,8 @@ impl<T: TokenQuantized> TokenConv2D<T> {
             strides: (options.stride_h() as usize, options.stride_w() as usize),
             constants,
             index,
-            layer_index
+            layer_index,
+            train: false,
         }
     }
 
@@ -138,7 +140,7 @@ impl<T: TokenQuantized> TokenConv2D<T> {
         )
     }
 }
-impl<T : TokenQuantized> AddAttributes for TokenConv2D<T>{
+impl<T : TokenQuantized> TrainToTokens for TokenConv2D<T>{
     fn add_attrs(&self, attrs: &mut ItemStruct) {
         let filters_ident = format_ident!("filters{}", self.layer_index as usize);
         let filters_type = self.filters.type_tokens();
@@ -176,14 +178,24 @@ impl<T : TokenQuantized> AddAttributes for TokenConv2D<T>{
         };
         ts.to_tokens(declarations);
     }
+    fn switch_train(&mut self) {
+        self.train = !self.train;
+    }
 
 }
 
 impl<T: TokenQuantized> ToTokens for TokenConv2D<T> {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
-        let filters_ident = format_ident!("filters{}", self.index);
+        let filters_ident : syn::Expr = if self.layer_index >= 0 {
+            let field_ident = format_ident!("filters{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        } else {
+            let field_ident = format_ident!("filters{}", self.index);
+            parse_quote!(#field_ident)
+        };
         let filters_type = self.filters.type_tokens();
         let filters = &self.filters;
+        let filters_declaration = if self.layer_index < 0{quote!{const #filters_ident: #filters_type = #filters;}} else {quote!{}};
         let output_shape = &self.output.shape;
         let output_scale = &self.output.scale;
         let output_zero_point = &self.output.zero_point;
@@ -191,15 +203,15 @@ impl<T: TokenQuantized> ToTokens for TokenConv2D<T> {
         let view_padding = self.view_padding;
         let (strides_0, strides_1) = self.strides;
         let (constants_0, constants_1) = &self.constants;
-        let reference_tok = if self.layer_index >= 0 {quote!{&}} else {quote!{}};
-        let output_name = if self.layer_index >= 0 {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
-        let input_name = if self.layer_index > 0 {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
-        let func_name : syn::Path = if self.layer_index >= 0 {parse_quote!(microflow::ops::conv_2d_borrow)} else {parse_quote!(microflow::ops::conv_2d)};
+        let reference_tok = if self.layer_index >= 0  && self.train {quote!{&}} else {quote!{}};
+        let output_name = if self.layer_index >= 0 && self.train {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
+        let input_name = if self.layer_index > 0 && self.train {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
+        let func_name : syn::Path = if self.layer_index >= 0 && self.train {parse_quote!(microflow::ops::conv_2d_borrow)} else {parse_quote!(microflow::ops::conv_2d)};
         let ts = quote! {
-            const #filters_ident: #filters_type = #filters;
+            #filters_declaration
             let #output_name: microflow::tensor::Tensor4D<_, #(#output_shape),*, 1usize> =
                 #func_name(
-                    #reference_tok #input_name,
+                    #reference_tok (#input_name),
                     &#filters_ident,
                     [#(#output_scale),*],
                     [#(#output_zero_point),*],

@@ -12,6 +12,7 @@ pub struct FullyConnectedOptions {
 
 /// Performs the FullyConnected operation.
 /// Returns a 2-dimensional output tensor containing the result of the operation.
+/// Takes ownership of the Tensor struct, is useful for memory optimization purposes.
 ///
 /// # Arguments
 /// * `input` - The 2-dimensional input tensor
@@ -28,6 +29,37 @@ pub fn fully_connected<
     const WEIGHTS_COLS: usize,
 >(
     input: Tensor2D<T, INPUT_ROWS, INPUT_COLS, 1>,
+    weights: &Tensor2D<T, INPUT_COLS, WEIGHTS_COLS, 1>,
+    output_scale: [f32; 1],
+    output_zero_point: [T; 1],
+    options: FullyConnectedOptions,
+    constants: (
+        Buffer2D<f32, WEIGHTS_COLS, 1>,
+        f32,
+        Buffer2D<i32, 1, WEIGHTS_COLS>,
+        i32,
+    ),
+) -> Tensor2D<T, INPUT_ROWS, WEIGHTS_COLS, 1> {
+    fully_connected_borrow(&input, weights, output_scale, output_zero_point, options, constants)
+}
+/// Performs the FullyConnected operation.
+/// Returns a 2-dimensional output tensor containing the result of the operation.
+///
+/// # Arguments
+/// * `input` - The 2-dimensional input tensor
+/// * `weights` - The 2-dimensional tensor representing the weights of the operator
+/// * `output_scale` - The scale of the resulting output tensor
+/// * `output_zero_point` - The zero point of the resulting output tensor
+/// * `options` - Operator's options as an [`FullyConnectedOptions`] struct
+/// * `constants` - Constant values coming from the pre-processing phase
+///
+pub fn fully_connected_borrow<
+    T: Quantized,
+    const INPUT_ROWS: usize,
+    const INPUT_COLS: usize,
+    const WEIGHTS_COLS: usize,
+>(
+    input: &Tensor2D<T, INPUT_ROWS, INPUT_COLS, 1>,
     weights: &Tensor2D<T, INPUT_COLS, WEIGHTS_COLS, 1>,
     output_scale: [f32; 1],
     output_zero_point: [T; 1],

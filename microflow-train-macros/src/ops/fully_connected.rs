@@ -1,5 +1,3 @@
-use std::ops::Add;
-
 use flatbuffers::{ForwardsUOffset, Vector};
 use nalgebra::{convert_ref, DMatrix};
 use proc_macro2::TokenStream as TokenStream2;
@@ -9,7 +7,7 @@ use syn::{parse_quote, ItemStruct};
 
 use crate::activation::TokenFusedActivation;
 use crate::buffer::TokenBuffer2D;
-use crate::quantize::{AddAttributes, TokenQuantized};
+use crate::quantize::{TrainToTokens, TokenQuantized};
 use crate::tensor::TokenTensor2D;
 use crate::tflite_flatbuffers::tflite::{Buffer, Operator, Tensor, TensorType};
 
@@ -21,7 +19,8 @@ pub(crate) struct TokenFullyConnected<T: TokenQuantized> {
     pub(crate) constants: (TokenBuffer2D<f32>, f32, TokenBuffer2D<i32>, i32),
     pub(crate) index: usize,
     pub(crate) reshape: bool,
-    pub(crate) layer_index: i32
+    pub(crate) layer_index: i32,
+    pub(crate) train: bool,
 }
 
 /// Parses the [`TokenFullyConnected`] struct from the given operator.
@@ -39,7 +38,7 @@ pub(crate) fn parse_indexed(
     buffers: Vector<ForwardsUOffset<Buffer>>,
     index: usize,
     layer_index: i32
-) -> Box<dyn AddAttributes> {
+) -> Box<dyn TrainToTokens> {
     let inputs = operator.inputs().unwrap();
     let input_type = tensors.get(inputs.get(0) as usize).type_();
     match input_type {
@@ -117,6 +116,7 @@ impl<T: TokenQuantized> TokenFullyConnected<T> {
             constants,
             index,
             layer_index,
+            train: false,
         }
     }
 
@@ -154,7 +154,7 @@ impl<T: TokenQuantized> TokenFullyConnected<T> {
     }
 
 }
-impl<T: TokenQuantized> AddAttributes for TokenFullyConnected<T>{
+impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T>{
     fn add_attrs(&self, attrs: &mut ItemStruct) {
         let filters_ident = format_ident!("weights{}", self.layer_index as usize);
         let filters_type = self.weights.type_tokens();
@@ -193,6 +193,9 @@ impl<T: TokenQuantized> AddAttributes for TokenFullyConnected<T>{
         };
         ts.to_tokens(declarations);
     }
+    fn switch_train(&mut self) {
+        self.train = !self.train;
+    }
 }
 
 impl<T: TokenQuantized> ToTokens for TokenFullyConnected<T> {
@@ -210,7 +213,7 @@ impl<T: TokenQuantized> ToTokens for TokenFullyConnected<T> {
         let output_zero_point = self.output.zero_point[0];
         let fused_activation = self.fused_activation;
         let (constants_0, constants_1, constants_2, constants_3) = &self.constants;
-        let reference_tok = if self.layer_index >= 0 {quote!{&}} else {quote!{}};
+        let reference_tok = if self.layer_index >= 0 && self.train {quote!{&}} else {quote!{}};
         let output_name = if self.layer_index >= 0 {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
         let input_name = if self.layer_index > 0 {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
         let func_name : syn::Path = if self.layer_index >= 0 {parse_quote!(microflow::ops::fully_connected_borrow)} else {parse_quote!(microflow::ops::fully_connected)};

@@ -13,3 +13,4 @@ pub mod buffer;
 pub mod ops;
 pub mod quantize;
 pub mod tensor;
+pub mod update_layer;

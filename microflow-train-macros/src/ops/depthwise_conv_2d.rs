@@ -1,6 +1,6 @@
 use crate::activation::TokenFusedActivation;
 use crate::buffer::TokenBuffer2D;
-use crate::quantize::{AddAttributes, TokenQuantized};
+use crate::quantize::{TrainToTokens, TokenQuantized};
 use crate::tensor::{TokenTensor2D, TokenTensor4D, TokenTensorViewPadding};
 use crate::tflite_flatbuffers::tflite::{Buffer, Operator, Tensor, TensorType};
 use flatbuffers::{ForwardsUOffset, Vector};
@@ -19,6 +19,7 @@ pub(crate) struct TokenDepthwiseConv2D<T: TokenQuantized> {
     pub(crate) constants: (TokenBuffer2D<f32>, TokenBuffer2D<f32>),
     pub(crate) index: usize,
     pub(crate) layer_index: i32,
+    pub(crate) train: bool,
 }
 
 /// Parses the [`TokenDepthwiseConv2D`] struct from the given operator.
@@ -35,7 +36,7 @@ pub(crate) fn parse_indexed(
     buffers: Vector<ForwardsUOffset<Buffer>>,
     index: usize,
     layer_index : i32,
-) -> Box<dyn AddAttributes> {
+) -> Box<dyn TrainToTokens> {
     let inputs = operator.inputs().unwrap();
     let input_type = tensors.get(inputs.get(0) as usize).type_();
     match input_type {
@@ -114,6 +115,7 @@ impl<T: TokenQuantized> TokenDepthwiseConv2D<T> {
             constants,
             index,
             layer_index,
+            train : false,
         }
     }
 
@@ -149,7 +151,7 @@ impl<T: TokenQuantized> TokenDepthwiseConv2D<T> {
 
 }
 
-impl<T: TokenQuantized> AddAttributes for TokenDepthwiseConv2D<T> {
+impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
     fn add_attrs(&self, attrs: &mut ItemStruct) {
         let filters_ident = format_ident!("weights{}", self.layer_index as usize);
         let filters_type = self.weights.type_tokens();
@@ -187,12 +189,22 @@ impl<T: TokenQuantized> AddAttributes for TokenDepthwiseConv2D<T> {
         };
         ts.to_tokens(declarations);
     }
+    fn switch_train(&mut self) {
+        self.train = !self.train;
+    }
 }
 impl<T: TokenQuantized> ToTokens for TokenDepthwiseConv2D<T> {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
-        let weights_ident = format_ident!("weights{}", self.index);
+        let weights_ident : syn::Expr = if self.layer_index >= 0 {
+            let field_ident = format_ident!("weights{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        } else {
+            let field_ident = format_ident!("weights{}", self.index);
+            parse_quote!(#field_ident)
+        };
         let weights_type = self.weights.type_tokens();
         let weights = &self.weights;
+        let weights_declaration = if self.layer_index < 0{quote!{const #weights_ident: #weights_type = #weights;}} else {quote!{}};
         let output_shape = &self.output.shape;
         let output_scale = &self.output.scale;
         let output_zero_point = &self.output.zero_point;
@@ -200,15 +212,15 @@ impl<T: TokenQuantized> ToTokens for TokenDepthwiseConv2D<T> {
         let view_padding = self.view_padding;
         let (strides_0, strides_1) = self.strides;
         let (constants_0, constants_1) = &self.constants;
-        let reference_tok = if self.layer_index >= 0 {quote!{&}} else {quote!{}};
-        let output_name = if self.layer_index >= 0 {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
-        let input_name = if self.layer_index > 0 {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
-        let func_name : syn::Path = if self.layer_index >= 0 {parse_quote!(microflow::ops::depthwise_conv_2d_borrow)} else {parse_quote!(microflow::ops::depthwise_conv_2d)};
+        let reference_tok = if self.layer_index >= 0 && self.train {quote!{&}} else {quote!{}};
+        let output_name = if self.layer_index >= 0 && self.train {format_ident!("input{}", self.layer_index as usize)} else {format_ident!("input")};
+        let input_name = if self.layer_index > 0 && self.train {format_ident!("input{}", (self.layer_index - 1) as usize)} else {format_ident!("input")};
+        let func_name : syn::Path = if self.layer_index >= 0 && self.train {parse_quote!(microflow::ops::depthwise_conv_2d_borrow)} else {parse_quote!(microflow::ops::depthwise_conv_2d)};
         let ts = quote! {
-            const #weights_ident: #weights_type = #weights;
+            #weights_declaration
             let #output_name: microflow::tensor::Tensor4D<_, #(#output_shape),*, 1usize> =
                 #func_name(
-                    #reference_tok #input_name,
+                    #reference_tok (#input_name),
                     &#weights_ident,
                     [#(#output_scale),*],
                     [#(#output_zero_point),*],
@@ -256,6 +268,7 @@ mod tests {
             ),
             index: 0,
             layer_index: -1,
+            train: false,
         }
     }
 
