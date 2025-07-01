@@ -10,6 +10,9 @@ pub use microflow_macros::*;
 
 pub mod activation;
 pub mod buffer;
+pub mod gradient_conv_2d;
+pub mod gradient_depthwise_conv_2d;
+pub mod gradient_fully_connected;
 pub mod ops;
 pub mod quantize;
 pub mod tensor;
