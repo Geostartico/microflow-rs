@@ -23,9 +23,10 @@ pub fn update_grad_depthwise_conv_2d<
     weights: &mut Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS, FILTER_QUANTS>,
     outputs: Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS, 1>,
     output_grad: Buffer4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS>,
-    activation: &FusedActivation,
+    activation: FusedActivation,
     strides: (usize, usize),
     padding: TensorViewPadding,
+    bias_scale: [f32; FILTER_QUANTS],
     learning_rate: f32,
 ) -> Buffer4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS> {
     let grad_weight = grad_depthwise_conv_2d_weights(
@@ -38,6 +39,14 @@ pub fn update_grad_depthwise_conv_2d<
         padding,
     );
     update_weights_4D(weights, grad_weight, learning_rate);
+    grad_depthwise_conv_2d_bias(
+        input,
+        weights,
+        &outputs,
+        &output_grad,
+        &activation,
+        bias_scale,
+    );
     grad_depthwise_conv_2d_inputs(
         input,
         weights,
@@ -70,9 +79,9 @@ pub fn grad_depthwise_conv_2d_inputs<
     let mut accum: Buffer4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS> =
         array::from_fn(|_| SMatrix::from_fn(|_, _| [T::zero(); INPUT_CHANS]));
     let quantized_6 = quantize(6f32, outputs.scale[0], outputs.zero_point[0]);
-    for output_row in (0..INPUT_ROWS).step_by(strides.0) {
-        for output_col in (0..INPUT_COLS).step_by(strides.1) {
-            for output_channel in (0..INPUT_CHANS).step_by(strides.1) {
+    for output_row in 0..OUTPUT_ROWS {
+        for output_col in 0..INPUT_COLS {
+            for output_channel in 0..INPUT_CHANS {
                 let val = outputs.buffer[0][(output_row, output_col)][output_channel]
                     .saturating_sub(outputs.zero_point[0]);
                 if !(match activation {
@@ -93,7 +102,7 @@ pub fn grad_depthwise_conv_2d_inputs<
                     if (coord.0 + filter_row as i32) < 0 {
                         continue;
                     }
-                    for filter_col in 0..WEIGHTS_ROWS {
+                    for filter_col in 0..WEIGHTS_COLS {
                         if (coord.1 + filter_col as i32) < 0 {
                             continue;
                         }
@@ -151,9 +160,9 @@ pub fn grad_depthwise_conv_2d_weights<
     let mut accum: Buffer4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS> =
         array::from_fn(|_| SMatrix::from_fn(|_, _| [T::zero(); INPUT_CHANS]));
     let quantized_6 = quantize(6f32, outputs.scale[0], outputs.zero_point[0]);
-    for output_row in (0..INPUT_ROWS).step_by(strides.0) {
-        for output_col in (0..INPUT_COLS).step_by(strides.1) {
-            for output_channel in (0..INPUT_CHANS).step_by(strides.1) {
+    for output_row in 0..OUTPUT_ROWS {
+        for output_col in 0..OUTPUT_COLS {
+            for output_channel in 0..INPUT_CHANS {
                 let val = outputs.buffer[0][(output_row, output_col)][output_channel]
                     .saturating_sub(outputs.zero_point[0]);
                 if !(match activation {
@@ -203,7 +212,7 @@ pub fn grad_depthwise_conv_2d_weights<
         })
     })
 }
-pub fn grad_conv_2d_bias<
+pub fn grad_depthwise_conv_2d_bias<
     T: Trainable,
     const INPUT_ROWS: usize,
     const INPUT_COLS: usize,
@@ -216,15 +225,15 @@ pub fn grad_conv_2d_bias<
 >(
     input: &Tensor4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS, 1>,
     weights: &Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS, FILTERS_QUANTS>,
-    outputs: &Tensor4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS, 1>,
-    output_grad: &Buffer4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS>,
-    activation: FusedActivation,
+    outputs: &Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS, 1>,
+    output_grad: &Buffer4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS>,
+    activation: &FusedActivation,
     bias_scale: [f32; FILTERS_QUANTS],
 ) -> SVector<f32, INPUT_CHANS> {
     let quantized_6 = quantize(6f32, outputs.scale[0], outputs.zero_point[0]);
     let mut accum: SVector<T, INPUT_CHANS> = SVector::zeros();
-    for output_row in 0..INPUT_ROWS {
-        for output_col in 0..WEIGHTS_COLS {
+    for output_row in 0..OUTPUT_ROWS {
+        for output_col in 0..OUTPUT_COLS {
             for output_batch in 0..INPUT_CHANS {
                 let val = outputs.buffer[0][(output_row, output_col)][output_batch]
                     .saturating_sub(outputs.zero_point[0]);

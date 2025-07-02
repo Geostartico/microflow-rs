@@ -11,11 +11,11 @@ pub(crate) trait TokenQuantized:
 {
 }
 //trait for layers to add their parameters
-pub(crate) trait TrainToTokens : ToTokens
-{
+pub(crate) trait TrainToTokens: ToTokens {
     fn add_attrs(&self, attrs: &mut ItemStruct);
     fn define_members(&self, definitions: &mut TokenStream);
     fn switch_train(&mut self);
+    fn train_ops(&self, definitions: &mut TokenStream);
 }
 
 impl<T: Scalar + ByteReprNum + ToTokens + SubsetOf<i32> + SubsetOf<f32> + SubsetOf<i64>>

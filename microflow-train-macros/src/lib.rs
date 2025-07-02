@@ -18,7 +18,7 @@ use syn::{parse_macro_input, ItemStruct};
 use crate::tflite_flatbuffers::tflite::TensorType;
 use ops::*;
 use structmeta::StructMeta;
-use syn::{LitStr, LitInt};
+use syn::{LitInt, LitStr};
 use tflite_flatbuffers::tflite::{root_as_model, BuiltinOperator};
 
 mod activation;
@@ -60,8 +60,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
     let model = root_as_model(&buf).unwrap_or_else(|_| {
         abort_call_site!("invalid model, please provide a valid TensorFlow Lite model")
     });
-    let layers_to_train : usize = args.num_train_layers.base10_parse().unwrap();
-
+    let layers_to_train: usize = args.num_train_layers.base10_parse().unwrap();
 
     let subgraph = model.subgraphs().unwrap().get(0);
     let tensors = subgraph.tensors().unwrap();
@@ -119,15 +118,16 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut layers = TokenStream2::new();
     let mut layers_train = TokenStream2::new();
     let mut new_declarations = TokenStream2::new();
+    let mut backward = TokenStream2::new();
     for (index, operator) in operators.iter().enumerate() {
         let layer_num = index as i32 - (operators.len() as i32 - layers_to_train as i32);
         if layer_num < 0 {
             let layer: Box<dyn ToTokens> = match BuiltinOperator(
                 model
-                .operator_codes()
-                .unwrap()
-                .get(operator.opcode_index() as usize)
-                .deprecated_builtin_code() as i32,
+                    .operator_codes()
+                    .unwrap()
+                    .get(operator.opcode_index() as usize)
+                    .deprecated_builtin_code() as i32,
             ) {
                 BuiltinOperator::FULLY_CONNECTED => {
                     fully_connected::parse(operator, tensors, buffers, index)
@@ -141,35 +141,39 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
                 BuiltinOperator::RESHAPE => Box::new(reshape::parse(operator, tensors)),
                 unsupported_op => abort_call_site!("unsupported operator: {:?}", unsupported_op),
             };
-            layer.to_tokens(&mut layers)
-        }
-        else {
+            layer.to_tokens(&mut layers);
+            layer.to_tokens(&mut layers_train)
+        } else {
             let mut layer: Box<dyn TrainToTokens> = match BuiltinOperator(
                 model
-                .operator_codes()
-                .unwrap()
-                .get(operator.opcode_index() as usize)
-                .deprecated_builtin_code() as i32,
+                    .operator_codes()
+                    .unwrap()
+                    .get(operator.opcode_index() as usize)
+                    .deprecated_builtin_code() as i32,
             ) {
                 BuiltinOperator::FULLY_CONNECTED => {
-                    fully_connected::parse_indexed(operator, tensors, buffers, index,layer_num)
+                    fully_connected::parse_indexed(operator, tensors, buffers, index, layer_num)
                 }
                 BuiltinOperator::DEPTHWISE_CONV_2D => {
-                    depthwise_conv_2d::parse_indexed(operator, tensors, buffers, index,layer_num)
+                    depthwise_conv_2d::parse_indexed(operator, tensors, buffers, index, layer_num)
                 }
-                BuiltinOperator::CONV_2D => conv_2d::parse_indexed(operator, tensors, buffers, index,layer_num),
-                BuiltinOperator::AVERAGE_POOL_2D => average_pool_2d::parse_indexed(operator, tensors,layer_num),
-                BuiltinOperator::SOFTMAX => softmax::parse_indexed(operator, tensors,layer_num),
-                BuiltinOperator::RESHAPE => reshape::parse_indexed(operator, tensors,layer_num),
+                BuiltinOperator::CONV_2D => {
+                    conv_2d::parse_indexed(operator, tensors, buffers, index, layer_num)
+                }
+                BuiltinOperator::AVERAGE_POOL_2D => {
+                    average_pool_2d::parse_indexed(operator, tensors, layer_num)
+                }
+                BuiltinOperator::SOFTMAX => softmax::parse_indexed(operator, tensors, layer_num),
+                BuiltinOperator::RESHAPE => reshape::parse_indexed(operator, tensors, layer_num),
                 unsupported_op => abort_call_site!("unsupported operator: {:?}", unsupported_op),
             };
             layer.add_attrs(&mut item);
             layer.define_members(&mut new_declarations);
+            layer.train_ops(&mut backward);
             layer.to_tokens(&mut layers);
             layer.switch_train();
             layer.to_tokens(&mut layers_train);
         }
-
     }
 
     let ident = &item.ident;
@@ -194,7 +198,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
         _ => unimplemented!(),
     };
 
-    let output_ident = format_ident!("input{}", layers_to_train-1);
+    let output_ident = format_ident!("input{}", layers_to_train - 1);
     let ts = quote! {
         #item
         impl #ident {
@@ -227,8 +231,10 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
                 self.predict_inner(input).dequantize()
             }
 
-            fn predict_inner_train(&mut self, input: microflow::tensor::#input_tensor<#input_type, #(#input_shape),*, 1usize>) -> microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize> {
+            fn predict_inner_train(&mut self, input: microflow::tensor::#input_tensor<#input_type, #(#input_shape),*, 1usize>, learning_rate: f32) -> microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize> {
                 #layers_train
+                let backward_gradient = #output_ident.buffer;
+                #backward
                 #output_ident
             }
         }

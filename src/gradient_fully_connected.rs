@@ -7,7 +7,7 @@ use crate::{
 };
 use nalgebra::{Matrix, SMatrix, SVector};
 
-pub fn update_grad_conv_2d<
+pub fn update_grad_fully_connected<
     T: Trainable,
     const INPUT_ROWS: usize,
     const INPUT_COLS: usize,
@@ -18,11 +18,20 @@ pub fn update_grad_conv_2d<
     weights: &mut Tensor2D<T, INPUT_COLS, WEIGHTS_COLS, 1>,
     activation: FusedActivation,
     output_grad: Buffer2D<T, INPUT_ROWS, WEIGHTS_COLS>,
+    bias_scale: f32,
     learning_rate: f32,
 ) -> Buffer2D<T, INPUT_ROWS, INPUT_COLS> {
     let grad_weight =
         grad_fully_connected_weights(input, &output, weights, &activation, &output_grad);
     update_weights_2D(weights, grad_weight, learning_rate);
+    grad_fully_connected_bias(
+        input,
+        &output,
+        &weights,
+        &activation,
+        &output_grad,
+        bias_scale,
+    );
     grad_fully_connected_input(input, &output, weights, &activation, &output_grad)
 }
 pub fn grad_fully_connected_weights<
@@ -139,7 +148,7 @@ pub fn grad_fully_connected_bias<
     input: &Tensor2D<T, INPUT_ROWS, INPUT_COLS, 1>,
     output: &Tensor2D<T, INPUT_ROWS, WEIGHTS_COLS, 1>,
     weights: &Tensor2D<T, INPUT_COLS, WEIGHTS_COLS, 1>,
-    activation: FusedActivation,
+    activation: &FusedActivation,
     output_grad: &Buffer2D<T, INPUT_ROWS, WEIGHTS_COLS>,
     bias_scale: f32,
 ) -> SVector<f32, WEIGHTS_COLS> {
