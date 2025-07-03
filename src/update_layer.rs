@@ -1,11 +1,9 @@
 use crate::{
-    activation::FusedActivation,
     buffer::{Buffer2D, Buffer4D},
     ops::softmax_borrow,
-    quantize::{quantize, Quantized, Trainable},
-    tensor::{Tensor2D, Tensor4D, TensorView, TensorViewPadding},
+    quantize::{Quantized, Trainable},
+    tensor::{Tensor2D, Tensor4D, TensorViewPadding},
 };
-use core::array;
 use libm::logf;
 use nalgebra::SMatrix;
 
@@ -44,9 +42,9 @@ pub fn update_weights_4D<
     })
 }
 
-fn mse_loss<T: Quantized, const ROWS: usize, const COLS: usize>(
-    output_p: &mut Tensor2D<T, ROWS, COLS, 1>,
-    output_gt: Tensor2D<T, ROWS, COLS, 1>,
+pub fn mse_loss<T: Quantized, const ROWS: usize, const COLS: usize>(
+    output_p: &Tensor2D<T, ROWS, COLS, 1>,
+    output_gt: &Tensor2D<T, ROWS, COLS, 1>,
 ) -> f32 {
     let difference: Buffer2D<f32, ROWS, COLS> = SMatrix::from_fn(|i, j| {
         let casted_p: f32 = T::to_superset(&output_p.buffer[(i, j)]);
@@ -56,13 +54,13 @@ fn mse_loss<T: Quantized, const ROWS: usize, const COLS: usize>(
     0.5f32 * difference.component_mul(&difference).sum()
 }
 
-fn mse_grad<T: Trainable, const ROWS: usize, const COLS: usize>(
-    output_p: &mut Tensor2D<T, ROWS, COLS, 1>,
+pub fn mse_grad<T: Trainable, const ROWS: usize, const COLS: usize>(
+    output_p: &Tensor2D<T, ROWS, COLS, 1>,
     output_gt: Tensor2D<T, ROWS, COLS, 1>,
 ) -> Buffer2D<T, ROWS, COLS> {
     SMatrix::from_fn(|i, j| output_p.buffer[(i, j)].saturating_sub(output_gt.buffer[(i, j)]))
 }
-pub fn grad_cross_entropy_loss<T: Trainable, const ROWS: usize, const COLS: usize>(
+pub fn crossentropy_grad<T: Trainable, const ROWS: usize, const COLS: usize>(
     input: &Tensor2D<T, ROWS, COLS, 1>,
     output_scale: f32,
     output_zero_point: T,

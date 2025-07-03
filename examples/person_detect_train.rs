@@ -4,8 +4,8 @@ use microflow_train_macros::model;
 #[path = "../samples/features/person_detect.rs"]
 mod features;
 
-#[model("models/person_detect.tflite", 10)]
-struct PersonDetect{}
+#[model("models/person_detect.tflite", 10, "crossentropy", true)]
+struct PersonDetect {}
 
 fn print_prediction(prediction: Buffer2D<f32, 1, 2>) {
     println!(

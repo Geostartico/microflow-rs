@@ -13,7 +13,7 @@ use std::fs;
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
-use syn::{parse_macro_input, ItemStruct};
+use syn::{parse_macro_input, ItemStruct, LitBool};
 
 use crate::tflite_flatbuffers::tflite::TensorType;
 use ops::*;
@@ -37,6 +37,10 @@ struct Args {
     path: LitStr,
     #[struct_meta(unnamed)]
     num_train_layers: LitInt,
+    #[struct_meta(unnamed)]
+    loss_function: LitStr,
+    #[struct_meta(unnamed)]
+    skip_last_layer_train: LitBool,
 }
 
 /// The entry point of MicroFlow.
@@ -142,7 +146,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
                 unsupported_op => abort_call_site!("unsupported operator: {:?}", unsupported_op),
             };
             layer.to_tokens(&mut layers);
-            layer.to_tokens(&mut layers_train)
+            layer.to_tokens(&mut layers_train);
         } else {
             let mut layer: Box<dyn TrainToTokens> = match BuiltinOperator(
                 model
@@ -167,12 +171,14 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
                 BuiltinOperator::RESHAPE => reshape::parse_indexed(operator, tensors, layer_num),
                 unsupported_op => abort_call_site!("unsupported operator: {:?}", unsupported_op),
             };
-            layer.add_attrs(&mut item);
-            layer.define_members(&mut new_declarations);
-            layer.train_ops(&mut backward);
             layer.to_tokens(&mut layers);
             layer.switch_train();
             layer.to_tokens(&mut layers_train);
+            if !(args.skip_last_layer_train.value && index >= operators.len() - 1) {
+                layer.define_members(&mut new_declarations);
+                layer.train_ops(&mut backward);
+                layer.add_attrs(&mut item);
+            }
         }
     }
 
@@ -199,6 +205,18 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let output_ident = format_ident!("input{}", layers_to_train - 1);
+    let last_layer = operators.get(operators.len() - 1);
+    let input_loss = if args.skip_last_layer_train.value {
+        layers_to_train - 2
+    } else {
+        layers_to_train - 1
+    };
+    let loss_ident = match args.loss_function.value().as_str() {
+        "crossentropy" => crossentropy::parse_indexed(last_layer, tensors, input_loss as i32),
+        "mse" => mse::parse_indexed(last_layer, tensors, input_loss as i32),
+        _ => unimplemented!(),
+    };
+    let loss_ident = loss_ident.into_token_stream();
     let ts = quote! {
         #item
         impl #ident {
@@ -231,9 +249,9 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
                 self.predict_inner(input).dequantize()
             }
 
-            fn predict_inner_train(&mut self, input: microflow::tensor::#input_tensor<#input_type, #(#input_shape),*, 1usize>, learning_rate: f32) -> microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize> {
+            fn predict_inner_train(&mut self, input: microflow::tensor::#input_tensor<#input_type, #(#input_shape),*, 1usize>,output_gt : microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize>, learning_rate: f32) -> microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize> {
                 #layers_train
-                let backward_gradient = #output_ident.buffer;
+                #loss_ident
                 #backward
                 #output_ident
             }
