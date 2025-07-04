@@ -216,6 +216,10 @@ impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
         } else {
             format_ident!("input")
         };
+        let constants_ident: syn::Expr = {
+            let field_ident = format_ident!("constants{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
         let activation = self.fused_activation;
         let view_padding = self.view_padding;
         let (strides_0, strides_1) = self.strides;
@@ -228,6 +232,7 @@ impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
             let backward_gradient = microflow::gradient_depthwise_conv_2d::update_grad_depthwise_conv_2d(
                 &#input_ident,
                 &mut #weights_ident,
+                &mut #constants_ident,
                 #output_ident,
                 backward_gradient,
                 #activation,
@@ -252,6 +257,13 @@ impl<T: TokenQuantized> ToTokens for TokenDepthwiseConv2D<T> {
             let field_ident = format_ident!("weights{}", self.index);
             parse_quote!(#field_ident)
         };
+        let constants_ident: syn::Expr = if self.layer_index >= 0 {
+            let field_ident = format_ident!("constants{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        } else {
+            let (constants_0, constants_1) = &self.constants;
+            parse_quote!((#constants_0, #constants_1))
+        };
         let weights_type = self.weights.type_tokens();
         let weights = &self.weights;
         let weights_declaration = if self.layer_index < 0 {
@@ -265,7 +277,6 @@ impl<T: TokenQuantized> ToTokens for TokenDepthwiseConv2D<T> {
         let fused_activation = self.fused_activation;
         let view_padding = self.view_padding;
         let (strides_0, strides_1) = self.strides;
-        let (constants_0, constants_1) = &self.constants;
         let reference_tok = if self.layer_index >= 0 && self.train {
             quote! {&}
         } else {
@@ -299,7 +310,7 @@ impl<T: TokenQuantized> ToTokens for TokenDepthwiseConv2D<T> {
                         view_padding: #view_padding,
                         strides: (#strides_0, #strides_1),
                     },
-                    (#constants_0, #constants_1)
+                    #constants_ident
             );
         };
         ts.to_tokens(tokens);

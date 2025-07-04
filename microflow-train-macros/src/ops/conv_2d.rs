@@ -214,6 +214,10 @@ impl<T: TokenQuantized> TrainToTokens for TokenConv2D<T> {
         } else {
             format_ident!("input")
         };
+        let constants_ident: syn::Expr = {
+            let field_ident = format_ident!("constants{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
         let activation = self.fused_activation;
         let view_padding = self.view_padding;
         let (strides_0, strides_1) = self.strides;
@@ -227,6 +231,7 @@ impl<T: TokenQuantized> TrainToTokens for TokenConv2D<T> {
             let backward_gradient = microflow::gradient_conv_2d::update_grad_conv_2d(
                 &#input_ident,
                 &mut #weights_ident,
+                &mut #constants_ident,
                 #output_ident,
                 backward_gradient,
                 #activation,
@@ -251,6 +256,13 @@ impl<T: TokenQuantized> ToTokens for TokenConv2D<T> {
         } else {
             let field_ident = format_ident!("filters{}", self.index);
             parse_quote!(#field_ident)
+        };
+        let constants_ident: syn::Expr = if self.layer_index >= 0 {
+            let field_ident = format_ident!("constants{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        } else {
+            let (constants_0, constants_1) = &self.constants;
+            parse_quote!((#constants_0, #constants_1))
         };
         let filters_type = self.filters.type_tokens();
         let filters = &self.filters;
@@ -299,7 +311,7 @@ impl<T: TokenQuantized> ToTokens for TokenConv2D<T> {
                         view_padding: #view_padding,
                         strides: (#strides_0, #strides_1),
                     },
-                    (#constants_0, #constants_1)
+                    #constants_ident
             );
         };
         ts.to_tokens(tokens);

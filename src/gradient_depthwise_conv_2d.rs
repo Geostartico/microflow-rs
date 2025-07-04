@@ -1,6 +1,6 @@
 use crate::{
     activation::FusedActivation,
-    buffer::Buffer4D,
+    buffer::{Buffer2D, Buffer4D},
     quantize::{quantize, Trainable},
     tensor::{Tensor4D, TensorView, TensorViewPadding},
     update_layer::{get_input_index, update_weights_4D},
@@ -21,6 +21,10 @@ pub fn update_grad_depthwise_conv_2d<
 >(
     input: &Tensor4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS, 1>,
     weights: &mut Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS, FILTER_QUANTS>,
+    constants: &mut (
+        Buffer2D<f32, INPUT_CHANS, 1>,
+        Buffer2D<f32, FILTER_QUANTS, 1>,
+    ),
     outputs: Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS, 1>,
     output_grad: Buffer4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS>,
     activation: FusedActivation,
@@ -39,7 +43,7 @@ pub fn update_grad_depthwise_conv_2d<
         padding,
     );
     update_weights_4D(weights, grad_weight, learning_rate);
-    grad_depthwise_conv_2d_bias(
+    let grad_bias = grad_depthwise_conv_2d_bias(
         input,
         weights,
         &outputs,
@@ -47,6 +51,7 @@ pub fn update_grad_depthwise_conv_2d<
         &activation,
         bias_scale,
     );
+    update_bias_dephtwise_conv_2d(constants, grad_bias, learning_rate);
     grad_depthwise_conv_2d_inputs(
         input,
         weights,
@@ -56,6 +61,17 @@ pub fn update_grad_depthwise_conv_2d<
         strides,
         padding,
     )
+}
+pub fn update_bias_dephtwise_conv_2d<const FILTER_QUANTS: usize, const WEIGHT_CHANS: usize>(
+    constants: &mut (
+        Buffer2D<f32, WEIGHT_CHANS, 1>,
+        Buffer2D<f32, FILTER_QUANTS, 1>,
+    ),
+    bias_gradient: Buffer2D<f32, WEIGHT_CHANS, 1>,
+    learning_rate: f32,
+) {
+    constants.0 =
+        SMatrix::from_fn(|i, j| constants.0[(i, j)] - learning_rate * bias_gradient[(i, j)]);
 }
 pub fn grad_depthwise_conv_2d_inputs<
     T: Trainable,
@@ -129,7 +145,7 @@ pub fn grad_depthwise_conv_2d_inputs<
             .get(batch)
             .copied()
             .unwrap_or(weights.scale[0]);
-        let scale = filters_scale * input.scale[0];
+        let scale = filters_scale / (input.scale[0] * outputs.scale[0]);
         SMatrix::from_fn(|i, j| {
             array::from_fn(|channel| {
                 let tmp: f32 = T::to_superset(&accum[batch][(i, j)][channel]);
@@ -203,7 +219,7 @@ pub fn grad_depthwise_conv_2d_weights<
             .get(batch)
             .copied()
             .unwrap_or(weights.scale[0]);
-        let scale = filters_scale * input.scale[0];
+        let scale = input.scale[0] / (filters_scale * outputs.scale[0]);
         SMatrix::from_fn(|i, j| {
             array::from_fn(|channel| {
                 let tmp: f32 = T::to_superset(&accum[batch][(i, j)][channel]);

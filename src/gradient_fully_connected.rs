@@ -5,7 +5,7 @@ use crate::{
     tensor::Tensor2D,
     update_layer::update_weights_2D,
 };
-use nalgebra::{Matrix, SMatrix, SVector};
+use nalgebra::{SMatrix, SVector};
 
 pub fn update_grad_fully_connected<
     T: Trainable,
@@ -16,6 +16,12 @@ pub fn update_grad_fully_connected<
     input: &Tensor2D<T, INPUT_ROWS, INPUT_COLS, 1>,
     output: Tensor2D<T, INPUT_ROWS, WEIGHTS_COLS, 1>,
     weights: &mut Tensor2D<T, INPUT_COLS, WEIGHTS_COLS, 1>,
+    constants: &mut (
+        Buffer2D<f32, WEIGHTS_COLS, 1>,
+        f32,
+        Buffer2D<i32, 1, WEIGHTS_COLS>,
+        i32,
+    ),
     activation: FusedActivation,
     output_grad: Buffer2D<T, INPUT_ROWS, WEIGHTS_COLS>,
     bias_scale: f32,
@@ -24,7 +30,7 @@ pub fn update_grad_fully_connected<
     let grad_weight =
         grad_fully_connected_weights(input, &output, weights, &activation, &output_grad);
     update_weights_2D(weights, grad_weight, learning_rate);
-    grad_fully_connected_bias(
+    let grad_bias = grad_fully_connected_bias(
         input,
         &output,
         &weights,
@@ -32,7 +38,21 @@ pub fn update_grad_fully_connected<
         &output_grad,
         bias_scale,
     );
+    update_bias_fully_connected(constants, grad_bias, learning_rate);
     grad_fully_connected_input(input, &output, weights, &activation, &output_grad)
+}
+pub fn update_bias_fully_connected<const WEIGHTS_COLS: usize>(
+    constants: &mut (
+        Buffer2D<f32, WEIGHTS_COLS, 1>,
+        f32,
+        Buffer2D<i32, 1, WEIGHTS_COLS>,
+        i32,
+    ),
+    bias_gradient: Buffer2D<f32, WEIGHTS_COLS, 1>,
+    learning_rate: f32,
+) {
+    constants.0 =
+        SMatrix::from_fn(|i, j| constants.0[(i, j)] - learning_rate * bias_gradient[(i, j)]);
 }
 pub fn grad_fully_connected_weights<
     T: Trainable,
@@ -47,7 +67,7 @@ pub fn grad_fully_connected_weights<
     output_grad: &Buffer2D<T, INPUT_ROWS, WEIGHTS_COLS>,
 ) -> Buffer2D<T, INPUT_COLS, WEIGHTS_COLS> {
     //let scale = input.scale[0] * weights.scale[0]/weights.scale[0]powi(2);
-    let scale = input.scale[0] / weights.scale[0];
+    let scale = input.scale[0] / (weights.scale[0] * output.scale[0]);
     let quantized_6 = quantize(6f32, output.scale[0], output.zero_point[0]);
     let mut accum: Buffer2D<T, INPUT_COLS, WEIGHTS_COLS> = SMatrix::zeros();
     for output_row in 0..INPUT_ROWS {
@@ -98,7 +118,7 @@ pub fn grad_fully_connected_input<
     output_grad: &Buffer2D<T, INPUT_ROWS, WEIGHTS_COLS>,
 ) -> Buffer2D<T, INPUT_ROWS, INPUT_COLS> {
     //let scale = input.scale[0] * weights.scale[0]/weights.scale[0]powi(2);
-    let scale = weights.scale[0] / input.scale[0];
+    let scale = weights.scale[0] / (input.scale[0] * output.scale[0]);
     let quantized_6 = quantize(6f32, output.scale[0], output.zero_point[0]);
     let mut accum: Buffer2D<T, INPUT_ROWS, INPUT_COLS> = SMatrix::zeros();
     for output_row in 0..INPUT_ROWS {
@@ -168,7 +188,8 @@ pub fn grad_fully_connected_bias<
                 accum[output_col].saturating_add(output_grad[(output_row, output_col)]);
         }
     }
-    let scale = bias_scale / (weights.scale[0] * input.scale[0]).powi(2);
+    //let scale = bias_scale / (weights.scale[0] * input.scale[0]).powi(2);
+    let scale = 1f32 / (weights.scale[0] * input.scale[0]).powi(2);
     accum.map(|el| {
         let tmp: f32 = T::to_superset(&el);
         tmp * scale

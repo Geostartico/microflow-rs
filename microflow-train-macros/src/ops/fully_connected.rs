@@ -219,11 +219,16 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
         };
         let activation = self.fused_activation;
         let bias_scale = self.scale_bias;
+        let constants_ident: syn::Expr = {
+            let field_ident = format_ident!("constants{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
         let prepend = quote! {
             let backward_gradient = crate::gradient_fully_connected::update_grad_fully_connected(
                 &#input_ident,
                 #output_ident,
                 &mut #weights_ident,
+                &mut #constants_ident,
                 #activation,
                 backward_gradient,
                 #bias_scale,
@@ -254,6 +259,13 @@ impl<T: TokenQuantized> ToTokens for TokenFullyConnected<T> {
             let field_ident = format_ident!("weights{}", self.index);
             parse_quote!(#field_ident)
         };
+        let constants_ident: syn::Expr = if self.layer_index >= 0 {
+            let field_ident = format_ident!("constants{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        } else {
+            let (constants_0, constants_1, constants_2, constants_3) = &self.constants;
+            parse_quote!((#constants_0, #constants_1, #constants_2, #constants_3))
+        };
         let weights_type = self.weights.type_tokens();
         let weights = &self.weights;
         let weights_declaration = if self.layer_index < 0 {
@@ -265,7 +277,6 @@ impl<T: TokenQuantized> ToTokens for TokenFullyConnected<T> {
         let output_scale = self.output.scale[0];
         let output_zero_point = self.output.zero_point[0];
         let fused_activation = self.fused_activation;
-        let (constants_0, constants_1, constants_2, constants_3) = &self.constants;
         let reference_tok = if self.layer_index >= 0 && self.train {
             quote! {&}
         } else {
@@ -298,7 +309,7 @@ impl<T: TokenQuantized> ToTokens for TokenFullyConnected<T> {
                     microflow::ops::FullyConnectedOptions {
                         fused_activation: #fused_activation,
                     },
-                    (#constants_0, #constants_1, #constants_2, #constants_3)
+                    #constants_ident,
             );
         };
         ts.to_tokens(tokens);
