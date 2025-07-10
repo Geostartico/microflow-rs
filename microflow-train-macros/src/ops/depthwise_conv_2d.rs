@@ -241,6 +241,9 @@ impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
                 [#(#bias_scale),*],
                 learning_rate,
             );
+            println!("gradient weights: {}",weight_gradient.iter().fold(String::new(), |accarr, batch|accarr + &batch.map(|el|el.iter().fold(String::new(),|sum, el1|sum +" "+ &el1.to_string())).to_string()));
+            println!("gradient input: {}",backward_gradient[0].map(|el|el.iter().fold(String::new(),|sum, el1|sum +" " +&el1.to_string())));
+            println!("mean gradient: {}",backward_gradient[0].map(|el|el.iter().fold(0f32,|sum, el1|sum+(*el1 as f32).abs() / el.len() as f32)).mean());
         };
         let mut ts = TokenStream2::new();
         prepend.to_tokens(&mut ts);
@@ -298,20 +301,20 @@ impl<T: TokenQuantized> ToTokens for TokenDepthwiseConv2D<T> {
             parse_quote!(microflow::ops::depthwise_conv_2d)
         };
         let ts = quote! {
-            #weights_declaration
-            let #output_name: microflow::tensor::Tensor4D<_, #(#output_shape),*, 1usize> =
-                #func_name(
-                    #reference_tok (#input_name),
-                    &#weights_ident,
-                    [#(#output_scale),*],
-                    [#(#output_zero_point),*],
-                    microflow::ops::DepthwiseConv2DOptions {
-                        fused_activation: #fused_activation,
-                        view_padding: #view_padding,
-                        strides: (#strides_0, #strides_1),
-                    },
-                    #constants_ident
-            );
+        #weights_declaration
+        let #output_name: microflow::tensor::Tensor4D<_, #(#output_shape),*, 1usize> =
+            #func_name(
+                #reference_tok (#input_name),
+                &#weights_ident,
+                [#(#output_scale),*],
+                [#(#output_zero_point),*],
+                microflow::ops::DepthwiseConv2DOptions {
+                    fused_activation: #fused_activation,
+                    view_padding: #view_padding,
+                    strides: (#strides_0, #strides_1),
+                },
+                #constants_ident
+        );
         };
         ts.to_tokens(tokens);
     }

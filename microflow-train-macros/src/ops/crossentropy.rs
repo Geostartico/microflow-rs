@@ -64,6 +64,7 @@ impl<T: TokenQuantized> ToTokens for TokenCrossentropy<T> {
                     #output_scale,
                     #output_zero_point,
                     &output_gt);
+            println!("loss {}", backward_gradient);
         };
         ts.to_tokens(tokens);
     }

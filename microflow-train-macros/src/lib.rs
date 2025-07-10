@@ -232,6 +232,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
 
             pub fn predict_quantized(&self, input: microflow::buffer::#input_buffer<#input_type, #(#input_shape),*>) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
                 let input = microflow::tensor::#input_tensor::new(input, [#(#input_scale),*], [#(#input_zero_point),*]);
+                //print!("dequantized: {}",input.dequantize()[0].map(|el|el[0]));
                 self.predict_inner(input).dequantize()
             }
 
@@ -239,17 +240,17 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
                 #layers
                 input
             }
-            pub fn predict_train(&mut self, input: microflow::buffer::#input_buffer<f32, #(#input_shape),*>) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
+            pub fn predict_train(&mut self, input: microflow::buffer::#input_buffer<f32, #(#input_shape),*>,output_gt : &microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize>,learning_rate: f32) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
                 let input = microflow::tensor::#input_tensor::quantize(input, [#(#input_scale),*], [#(#input_zero_point),*]);
-                self.predict_inner(input).dequantize()
+                self.predict_inner_train(input, output_gt, learning_rate).dequantize()
             }
 
-            pub fn predict_quantized_train(&mut self, input: microflow::buffer::#input_buffer<#input_type, #(#input_shape),*>) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
+            pub fn predict_quantized_train(&mut self, input: microflow::buffer::#input_buffer<#input_type, #(#input_shape),*>, output_gt : &microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize>,learning_rate : f32) -> microflow::buffer::#output_buffer<f32, #(#output_shape),*> {
                 let input = microflow::tensor::#input_tensor::new(input, [#(#input_scale),*], [#(#input_zero_point),*]);
-                self.predict_inner(input).dequantize()
+                self.predict_inner_train(input, output_gt, learning_rate).dequantize()
             }
 
-            fn predict_inner_train(&mut self, input: microflow::tensor::#input_tensor<#input_type, #(#input_shape),*, 1usize>,output_gt : microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize>, learning_rate: f32) -> microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize> {
+            fn predict_inner_train(&mut self, input: microflow::tensor::#input_tensor<#input_type, #(#input_shape),*, 1usize>,output_gt : &microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize>, learning_rate: f32) -> microflow::tensor::#output_tensor<#output_type, #(#output_shape),*, 1usize> {
                 #layers_train
                 #loss_ident
                 #backward

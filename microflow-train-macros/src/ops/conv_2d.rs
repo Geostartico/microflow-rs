@@ -228,7 +228,7 @@ impl<T: TokenQuantized> TrainToTokens for TokenConv2D<T> {
             .map(|x| quote! { #x })
             .collect::<Vec<_>>();
         let prepend = quote! {
-            let backward_gradient = microflow::gradient_conv_2d::update_grad_conv_2d(
+            let (backward_gradient, weight_gradient) = microflow::gradient_conv_2d::update_grad_conv_2d(
                 &#input_ident,
                 &mut #weights_ident,
                 &mut #constants_ident,
@@ -240,6 +240,9 @@ impl<T: TokenQuantized> TrainToTokens for TokenConv2D<T> {
                 [#(#bias_scale),*],
                 learning_rate,
             );
+            println!("gradient weights: {}",weight_gradient.iter().fold(String::new(), |accarr, batch|accarr + &batch.map(|el|el.iter().fold(String::new(),|sum, el1|sum +" "+ &el1.to_string())).to_string()));
+            println!("gradient input: {}",backward_gradient[0].map(|el|el.iter().fold(String::new(),|sum, el1|sum +" " +&el1.to_string())));
+            println!("mean gradient: {}",backward_gradient[0].map(|el|el.iter().fold(0f32,|sum, el1|sum+(*el1 as f32).abs() / el.len() as f32)).mean());
         };
         let mut ts = TokenStream2::new();
         prepend.to_tokens(&mut ts);

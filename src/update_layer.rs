@@ -65,11 +65,14 @@ pub fn crossentropy_grad<T: Trainable, const ROWS: usize, const COLS: usize>(
     output_scale: f32,
     output_zero_point: T,
     label: &Tensor2D<T, ROWS, COLS, 1>,
-) -> Buffer2D<T, ROWS, COLS> {
+) -> Buffer2D<i32, ROWS, COLS> {
     let softm = softmax_borrow(&input, [output_scale], [output_zero_point]);
     SMatrix::from_fn(|i, j| {
-        let diff: f32 = T::to_superset(&softm.buffer[(i, j)].saturating_sub(label.buffer[(i, j)]));
-        T::from_superset(&(output_scale * diff / (input.scale[0].powi(2)))).unwrap()
+        let tmp1: i32 = T::to_superset(&softm.buffer[(i, j)]);
+        let tmp2: i32 = label.buffer[(i, j)].to_superset();
+        let diff: i32 = tmp1 - tmp2;
+        // T::from_superset(&(output_scale * diff / (input.scale[0].powi(2)))).unwrap()
+        diff
     })
 }
 pub fn cross_entropy_loss<T: Trainable, const ROWS: usize, const COLS: usize>(
