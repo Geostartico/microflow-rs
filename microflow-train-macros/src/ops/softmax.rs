@@ -81,6 +81,7 @@ impl<T: TokenQuantized> TrainToTokens for TokenSoftmax<T> {
         self.train = !self.train;
     }
     fn train_ops(&self, definitions: &mut TokenStream2) {}
+    fn update_ops(&self, updates: &mut TokenStream2) {}
 }
 
 impl<T: TokenQuantized> ToTokens for TokenSoftmax<T> {

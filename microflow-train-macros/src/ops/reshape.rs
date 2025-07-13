@@ -117,6 +117,7 @@ impl TrainToTokens for TokenReshape {
         ts.extend(backward.clone());
         *backward = ts;
     }
+    fn update_ops(&self, updates: &mut TokenStream2) {}
 }
 
 impl ToTokens for TokenReshape {

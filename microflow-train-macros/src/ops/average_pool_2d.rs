@@ -188,13 +188,14 @@ impl<T: TokenQuantized> TrainToTokens for TokenAveragePool2D<T> {
                 (#stride_0, #stride_1),
                 #padding,
             );
-            println!("gradient input average pool: {}",backward_gradient[0].map(|el|el.iter().fold(String::new(),|sum, el1|sum +" " +&el1.to_string())));
+            // println!("gradient input average pool: {}",backward_gradient[0].map(|el|el.iter().fold(String::new(),|sum, el1|sum +" " +&el1.to_string())));
         };
         let mut ts = TokenStream2::new();
         prepend.to_tokens(&mut ts);
         ts.extend(backward.clone());
         *backward = ts;
     }
+    fn update_ops(&self, updates: &mut TokenStream2) {}
 }
 
 #[cfg(test)]

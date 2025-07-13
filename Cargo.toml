@@ -32,6 +32,8 @@ num-traits = "0.2.19"
 [dev-dependencies]
 csv = "1.2"
 criterion = "0.5"
+image = "0.25.6"
+rand = "0.9.1"
 
 [[bench]]
 name = "sine"

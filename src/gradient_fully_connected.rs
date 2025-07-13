@@ -3,7 +3,7 @@ use crate::{
     buffer::Buffer2D,
     quantize::{quantize, Trainable},
     tensor::Tensor2D,
-    update_layer::update_weights_2D,
+    update_layer::{accumulate_gradient_2D, update_weights_2D},
 };
 use nalgebra::{SMatrix, SVector};
 
@@ -15,8 +15,15 @@ pub fn update_grad_fully_connected<
 >(
     input: &Tensor2D<T, INPUT_ROWS, INPUT_COLS, 1>,
     output: Tensor2D<T, INPUT_ROWS, WEIGHTS_COLS, 1>,
-    weights: &mut Tensor2D<T, INPUT_COLS, WEIGHTS_COLS, 1>,
-    constants: &mut (
+    weights: &Tensor2D<T, INPUT_COLS, WEIGHTS_COLS, 1>,
+    weights_gradient: &mut Buffer2D<i32, INPUT_COLS, WEIGHTS_COLS>,
+    constants: &(
+        Buffer2D<f32, WEIGHTS_COLS, 1>,
+        f32,
+        Buffer2D<i32, 1, WEIGHTS_COLS>,
+        i32,
+    ),
+    constants_gradient: &mut (
         Buffer2D<f32, WEIGHTS_COLS, 1>,
         f32,
         Buffer2D<i32, 1, WEIGHTS_COLS>,
@@ -29,7 +36,7 @@ pub fn update_grad_fully_connected<
 ) -> Buffer2D<T, INPUT_ROWS, INPUT_COLS> {
     let grad_weight =
         grad_fully_connected_weights(input, &output, weights, &activation, &output_grad);
-    update_weights_2D(weights, grad_weight, learning_rate);
+    accumulate_gradient_2D(&grad_weight, weights_gradient);
     let grad_bias = grad_fully_connected_bias(
         input,
         &output,
@@ -38,7 +45,7 @@ pub fn update_grad_fully_connected<
         &output_grad,
         bias_scale,
     );
-    update_bias_fully_connected(constants, grad_bias, learning_rate);
+    update_bias_fully_connected(constants_gradient, grad_bias);
     grad_fully_connected_input(input, &output, weights, &activation, &output_grad)
 }
 pub fn update_bias_fully_connected<const WEIGHTS_COLS: usize>(
@@ -49,10 +56,8 @@ pub fn update_bias_fully_connected<const WEIGHTS_COLS: usize>(
         i32,
     ),
     bias_gradient: Buffer2D<f32, WEIGHTS_COLS, 1>,
-    learning_rate: f32,
 ) {
-    constants.0 =
-        SMatrix::from_fn(|i, j| constants.0[(i, j)] - learning_rate * bias_gradient[(i, j)]);
+    constants.0 = SMatrix::from_fn(|i, j| constants.0[(i, j)] + bias_gradient[(i, j)]);
 }
 pub fn grad_fully_connected_weights<
     T: Trainable,

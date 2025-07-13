@@ -3,7 +3,7 @@ use crate::{
     buffer::{Buffer2D, Buffer4D},
     quantize::{quantize, Trainable},
     tensor::{Tensor4D, TensorView, TensorViewPadding},
-    update_layer::{get_input_index, update_weights_4D},
+    update_layer::{accumulate_gradient_4D, get_input_index, update_weights_4D},
 };
 use core::{array, ops::Mul};
 use nalgebra::{SMatrix, SVector};
@@ -21,8 +21,13 @@ pub fn update_grad_conv_2d<
     const FILTER_NUM: usize,
 >(
     input: &Tensor4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS, 1>,
-    weights: &mut Tensor4D<T, FILTER_NUM, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS, FILTER_QUANTS>,
-    constants: &mut (
+    weights: &Tensor4D<T, FILTER_NUM, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS, FILTER_QUANTS>,
+    weights_gradient: &mut Buffer4D<i32, FILTER_NUM, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS>,
+    constants: &(
+        Buffer2D<f32, FILTER_NUM, 1>,
+        Buffer2D<f32, FILTER_QUANTS, 1>,
+    ),
+    constants_gradient: &mut (
         Buffer2D<f32, FILTER_NUM, 1>,
         Buffer2D<f32, FILTER_QUANTS, 1>,
     ),
@@ -46,7 +51,7 @@ pub fn update_grad_conv_2d<
         strides,
         padding,
     );
-    update_weights_4D(weights, grad_weight, learning_rate);
+    accumulate_gradient_4D(&grad_weight, weights_gradient);
     let grad_bias = grad_conv_2d_bias(
         input,
         weights,
@@ -55,7 +60,7 @@ pub fn update_grad_conv_2d<
         &activation,
         bias_scale,
     );
-    update_bias_conv2d(constants, grad_bias, learning_rate);
+    // update_bias_conv2d(constants, constants_gradient);
     (
         grad_conv_2d_inputs(
             input,
@@ -75,10 +80,8 @@ pub fn update_bias_conv2d<const FILTER_QUANTS: usize, const FILTER_NUM: usize>(
         Buffer2D<f32, FILTER_QUANTS, 1>,
     ),
     bias_gradient: Buffer2D<f32, FILTER_NUM, 1>,
-    learning_rate: f32,
 ) {
-    constants.0 =
-        SMatrix::from_fn(|i, j| constants.0[(i, j)] - learning_rate * bias_gradient[(i, j)]);
+    constants.0 = SMatrix::from_fn(|i, j| constants.0[(i, j)] + bias_gradient[(i, j)]);
 }
 pub fn grad_conv_2d_inputs<
     T: Trainable,

@@ -1,3 +1,8 @@
+use crate::activation::TokenFusedActivation;
+use crate::buffer::TokenBuffer2D;
+use crate::quantize::{TokenQuantized, TrainToTokens};
+use crate::tensor::TokenTensor2D;
+use crate::tflite_flatbuffers::tflite::{Buffer, Operator, Tensor, TensorType};
 use flatbuffers::{ForwardsUOffset, Vector};
 use nalgebra::{convert_ref, DMatrix};
 use proc_macro2::TokenStream as TokenStream2;
@@ -5,18 +10,13 @@ use quote::{format_ident, quote, ToTokens};
 use simba::scalar::SupersetOf;
 use syn::{parse_quote, ItemStruct};
 
-use crate::activation::TokenFusedActivation;
-use crate::buffer::TokenBuffer2D;
-use crate::quantize::{TokenQuantized, TrainToTokens};
-use crate::tensor::TokenTensor2D;
-use crate::tflite_flatbuffers::tflite::{Buffer, Operator, Tensor, TensorType};
-
 /// Represents the tokenized version of the `FullyConnected` operator.
 pub(crate) struct TokenFullyConnected<T: TokenQuantized> {
     pub(crate) weights: TokenTensor2D<T>,
     pub(crate) output: TokenTensor2D<T>,
     pub(crate) fused_activation: TokenFusedActivation,
     pub(crate) constants: (TokenBuffer2D<f32>, f32, TokenBuffer2D<i32>, i32),
+    pub(crate) constants_gradient: (TokenBuffer2D<f32>, f32, TokenBuffer2D<i32>, i32),
     pub(crate) index: usize,
     pub(crate) reshape: bool,
     pub(crate) scale_bias: f32,
@@ -117,9 +117,11 @@ impl<T: TokenQuantized> TokenFullyConnected<T> {
             .builtin_options_as_fully_connected_options()
             .unwrap();
         let constants = Self::preprocess(&input, &weights, &biases, &output);
+        let constants_gradient = Self::zero_constants(&weights, &biases);
         Self {
             weights,
             output,
+            constants_gradient,
             fused_activation: options.fused_activation_function().into(),
             reshape: input.shape.len() != 2,
             scale_bias: biases.scale[0],
@@ -162,12 +164,30 @@ impl<T: TokenQuantized> TokenFullyConnected<T> {
                 * i32::from_subset(&weights.zero_point[0]),
         )
     }
+    fn zero_constants(
+        weights: &TokenTensor2D<T>,
+        biases: &TokenTensor2D<i32>,
+    ) -> (TokenBuffer2D<f32>, f32, TokenBuffer2D<i32>, i32) {
+        (
+            TokenBuffer2D::from(DMatrix::from_fn(
+                biases.shape[0],
+                biases.shape[1],
+                |_, _| 0f32,
+            )),
+            0f32,
+            TokenBuffer2D::from(DMatrix::from_fn(weights.shape[0], 1, |_, _| 0i32)),
+            0i32,
+        )
+    }
 }
 impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
     fn add_attrs(&self, attrs: &mut ItemStruct) {
         let filters_ident = format_ident!("weights{}", self.layer_index as usize);
+        let filters_gradient_ident = format_ident!("weights{}_gradient", self.layer_index as usize);
         let filters_type = self.weights.type_tokens();
         let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
+        let constants_gradient_field_name =
+            format_ident!("constants{}_gradient", self.layer_index as usize);
         let (constants_0, _, constants_2, _) = &self.constants;
         let dim00 = constants_0.shape().0;
         let dim01 = constants_0.shape().1;
@@ -180,13 +200,21 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
         let constants_field: syn::Field = syn::parse_quote! {
             #constants_field_name: #constants_field_type
         };
+        let constants_gradient_field: syn::Field = syn::parse_quote! {
+            #constants_gradient_field_name: #constants_field_type
+        };
         let filters_field: syn::Field = syn::parse_quote! {
             #filters_ident: #filters_type
+        };
+        let filters_gradient_field: syn::Field = syn::parse_quote! {
+            #filters_gradient_ident: #filters_type
         };
         match &mut attrs.fields {
             syn::Fields::Named(ref mut fields_named) => {
                 fields_named.named.push(constants_field);
                 fields_named.named.push(filters_field);
+                fields_named.named.push(constants_gradient_field);
+                fields_named.named.push(filters_gradient_field);
             }
             _ => panic!("add_fields only works with structs with named fields"),
         }
@@ -194,11 +222,22 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
     fn define_members(&self, declarations: &mut TokenStream2) {
         let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
         let filters_ident = format_ident!("weights{}", self.layer_index as usize);
+        let constants_gradient_field_name =
+            format_ident!("constants{}_gradient", self.layer_index as usize);
+        let filters_gradient_ident = format_ident!("weights{}_gradient", self.layer_index as usize);
         let filters = &self.weights;
         let (constants_0, constants_1, constants_2, constants_3) = &self.constants;
+        let (
+            constants_gradient_0,
+            constants_gradient_1,
+            constants_gradient_2,
+            constants_gradient_3,
+        ) = &self.constants_gradient;
         let ts = quote! {
             #filters_ident : #filters,
+            #filters_gradient_ident : SMatrix::from_fn(|_,_|0i32),
             #constants_field_name : (#constants_0, #constants_1, #constants_2, #constants_3),
+            #constants_gradient_field_name : (#constants_gradient_0, #constants_gradient_1, #constants_gradient_2, #constants_gradient_3),
         };
         ts.to_tokens(declarations);
     }
@@ -242,6 +281,43 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
     }
     fn switch_train(&mut self) {
         self.train = !self.train;
+    }
+
+    fn update_ops(&self, updates: &mut TokenStream2) {
+        let weights_ident: syn::Expr = {
+            let field_ident = format_ident!("weights{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
+        let weights_gradient_ident: syn::Expr = {
+            let field_ident = format_ident!("weights{}_gradient", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
+        let constants_ident: syn::Expr = {
+            let field_ident = format_ident!("constants{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
+        let constants_gradient_ident: syn::Expr = {
+            let field_ident = format_ident!("constants{}_gradient", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
+        let update = quote! {
+            microflow::update_layer::update_weights_2D(
+                &mut #weights_ident,
+                &#weights_gradient_ident,
+                batch_size,
+                learning_rate,
+            );
+            microflow::update_layer::update_weights_2D_float(
+                &mut #constants_ident.0,
+                &#constants_gradient_ident.0,
+                batch_size,
+                learning_rate,
+            );
+            // println!("gradient weights: {}",weight_gradient.iter().fold(String::new(), |accarr, batch|accarr + &batch.map(|el|el.iter().fold(String::new(),|sum, el1|sum +" "+ &el1.to_string())).to_string()));
+            // println!("gradient input: {}",backward_gradient[0].map(|el|el.iter().fold(String::new(),|sum, el1|sum +" " +&el1.to_string())));
+            // println!("mean gradient conv: {}",weight_gradient[0].map(|el|el.iter().fold(0f32,|sum, el1|sum+(*el1 as f32).abs() / el.len() as f32)).mean());
+        };
+        update.to_tokens(updates);
     }
 }
 

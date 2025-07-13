@@ -16,6 +16,7 @@ pub(crate) trait TrainToTokens: ToTokens {
     fn define_members(&self, definitions: &mut TokenStream);
     fn switch_train(&mut self);
     fn train_ops(&self, definitions: &mut TokenStream);
+    fn update_ops(&self, updates: &mut TokenStream);
 }
 
 impl<T: Scalar + ByteReprNum + ToTokens + SubsetOf<i32> + SubsetOf<f32> + SubsetOf<i64>>

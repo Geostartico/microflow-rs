@@ -123,6 +123,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut layers_train = TokenStream2::new();
     let mut new_declarations = TokenStream2::new();
     let mut backward = TokenStream2::new();
+    let mut update = TokenStream2::new();
     for (index, operator) in operators.iter().enumerate() {
         let layer_num = index as i32 - (operators.len() as i32 - layers_to_train as i32);
         if layer_num < 0 {
@@ -178,6 +179,7 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
                 layer.define_members(&mut new_declarations);
                 layer.train_ops(&mut backward);
                 layer.add_attrs(&mut item);
+                layer.update_ops(&mut update);
             }
         }
     }
@@ -255,6 +257,9 @@ pub fn model(args: TokenStream, item: TokenStream) -> TokenStream {
                 #loss_ident
                 #backward
                 #output_ident
+            }
+            fn update_layers(&mut self, batch_size: usize, learning_rate: f32){
+                #update
             }
         }
     };

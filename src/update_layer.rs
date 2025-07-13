@@ -9,14 +9,28 @@ use nalgebra::SMatrix;
 
 pub fn update_weights_2D<T: Trainable, const ROWS: usize, const COLS: usize>(
     weights: &mut Tensor2D<T, ROWS, COLS, 1>,
-    weights_gradient: Buffer2D<T, ROWS, COLS>,
+    weights_gradient: &Buffer2D<i32, ROWS, COLS>,
+    batch_size: usize,
     learning_rate: f32,
 ) {
     weights.buffer = SMatrix::from_fn(|i, j| {
-        let tmp: f32 = T::to_superset(&weights_gradient[(i, j)]);
-        weights.buffer[(i, j)]
-            .saturating_sub(T::from_superset(&(learning_rate * tmp).round()).unwrap())
+        let tmp: f32 = weights_gradient[(i, j)] as f32;
+        weights.buffer[(i, j)].saturating_sub(
+            T::from_superset(&(learning_rate * tmp / batch_size as f32).round()).unwrap(),
+        )
     });
+}
+pub fn update_weights_2D_float<const ROWS: usize, const COLS: usize>(
+    weights: &mut Buffer2D<f32, ROWS, COLS>,
+    weights_gradient: &Buffer2D<f32, ROWS, COLS>,
+    batch_size: usize,
+    learning_rate: f32,
+) {
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            weights[(row, col)] -= learning_rate * weights_gradient[(row, col)] / batch_size as f32
+        }
+    }
 }
 
 pub fn update_weights_4D<
@@ -28,18 +42,54 @@ pub fn update_weights_4D<
     const QUANTS: usize,
 >(
     weights: &mut Tensor4D<T, BATCHES, ROWS, COLS, CHANS, QUANTS>,
-    weights_gradient: Buffer4D<T, BATCHES, ROWS, COLS, CHANS>,
+    weights_gradient: &Buffer4D<i32, BATCHES, ROWS, COLS, CHANS>,
+    batch_size: usize,
     learning_rate: f32,
 ) {
     weights.buffer = core::array::from_fn(|batch| {
         SMatrix::from_fn(|i, j| {
             core::array::from_fn(|channel| {
-                let tmp: f32 = T::to_superset(&weights_gradient[batch][(i, j)][channel]);
-                weights.buffer[batch][(i, j)][channel]
-                    .saturating_sub(T::from_superset(&(learning_rate * tmp).round()).unwrap())
+                let tmp: f32 = weights_gradient[batch][(i, j)][channel] as f32;
+                weights.buffer[batch][(i, j)][channel].saturating_sub(
+                    T::from_superset(&(learning_rate * tmp / batch_size as f32).round()).unwrap(),
+                )
             })
         })
     })
+}
+pub fn accumulate_gradient_2D<T: Trainable, const ROWS: usize, const COLS: usize>(
+    current_gradient: &Buffer2D<T, ROWS, COLS>,
+    weights_gradient: &mut Buffer2D<i32, ROWS, COLS>,
+) {
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            let tmp: i32 = current_gradient[(row, col)].to_superset();
+            weights_gradient[(row, col)] = tmp.saturating_add(weights_gradient[(row, col)]);
+        }
+    }
+}
+
+pub fn accumulate_gradient_4D<
+    T: Trainable,
+    const BATCHES: usize,
+    const ROWS: usize,
+    const COLS: usize,
+    const CHANS: usize,
+>(
+    current_gradient: &Buffer4D<T, BATCHES, ROWS, COLS, CHANS>,
+    weights_gradient: &mut Buffer4D<i32, BATCHES, ROWS, COLS, CHANS>,
+) {
+    for batch in 0..BATCHES {
+        for row in 0..ROWS {
+            for col in 0..COLS {
+                for channel in 0..CHANS {
+                    let tmp: i32 = current_gradient[batch][(row, col)][channel].to_superset();
+                    weights_gradient[batch][(row, col)][channel] =
+                        tmp.saturating_add(weights_gradient[batch][(row, col)][channel]);
+                }
+            }
+        }
+    }
 }
 
 pub fn mse_loss<T: Quantized, const ROWS: usize, const COLS: usize>(

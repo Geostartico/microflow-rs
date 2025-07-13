@@ -17,6 +17,7 @@ pub(crate) struct TokenDepthwiseConv2D<T: TokenQuantized> {
     pub(crate) view_padding: TokenTensorViewPadding,
     pub(crate) strides: (usize, usize),
     pub(crate) constants: (TokenBuffer2D<f32>, TokenBuffer2D<f32>),
+    pub(crate) constants_gradient: (TokenBuffer2D<f32>, TokenBuffer2D<f32>),
     pub(crate) index: usize,
     pub(crate) layer_index: i32,
     pub(crate) scale_bias: Vec<f32>,
@@ -115,8 +116,10 @@ impl<T: TokenQuantized> TokenDepthwiseConv2D<T> {
             .builtin_options_as_depthwise_conv_2_doptions()
             .unwrap();
         let constants = Self::preprocess(&input, &weights, &biases, &output);
+        let constants_gradient = Self::gen_zero_constants(&weights);
         Self {
             weights,
+            constants_gradient,
             output,
             fused_activation: options.fused_activation_function().into(),
             view_padding: options.padding().into(),
@@ -158,13 +161,27 @@ impl<T: TokenQuantized> TokenDepthwiseConv2D<T> {
             })),
         )
     }
+    fn gen_zero_constants(weights: &TokenTensor4D<T>) -> (TokenBuffer2D<f32>, TokenBuffer2D<f32>) {
+        (
+            TokenBuffer2D::from(DMatrix::from_fn(weights.shape[3], 1, |_, _| 0f32)),
+            TokenBuffer2D::from(DMatrix::from_fn(weights.scale.len(), 1, |_, _| 0f32)),
+        )
+    }
 }
 
 impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
     fn add_attrs(&self, attrs: &mut ItemStruct) {
         let filters_ident = format_ident!("weights{}", self.layer_index as usize);
+        let filters_gradient_ident = format_ident!("weights{}_gradient", self.layer_index as usize);
+        let filters_shape = &self.weights.shape;
+        let filters_shape_0 = filters_shape[0];
+        let filters_shape_1 = filters_shape[1];
+        let filters_shape_2 = filters_shape[2];
+        let filters_shape_3 = filters_shape[3];
         let filters_type = self.weights.type_tokens();
         let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
+        let constants_gradient_field_name =
+            format_ident!("constants{}_gradient", self.layer_index as usize);
         let dim00 = self.constants.0.shape().0;
         let dim01 = self.constants.0.shape().1;
         let dim10 = self.constants.1.shape().0;
@@ -179,10 +196,18 @@ impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
         let filters_field: syn::Field = syn::parse_quote! {
             #filters_ident: #filters_type
         };
+        let constants_field_gradient: syn::Field = syn::parse_quote! {
+            #constants_gradient_field_name: #constants_field_type
+        };
+        let filters_field_gradient: syn::Field = syn::parse_quote! {
+            #filters_gradient_ident: Buffer4D<i32,#filters_shape_0,#filters_shape_1,#filters_shape_2,#filters_shape_3>
+        };
         match &mut attrs.fields {
             syn::Fields::Named(ref mut fields_named) => {
                 fields_named.named.push(constants_field);
                 fields_named.named.push(filters_field);
+                fields_named.named.push(constants_field_gradient);
+                fields_named.named.push(filters_field_gradient);
             }
             _ => panic!("add_fields only works with structs with named fields"),
         }
@@ -190,11 +215,17 @@ impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
     fn define_members(&self, declarations: &mut TokenStream2) {
         let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
         let filters_ident = format_ident!("weights{}", self.layer_index as usize);
+        let constants_gradient_field_name =
+            format_ident!("constants{}_gradient", self.layer_index as usize);
+        let filters_gradient_ident = format_ident!("weights{}_gradient", self.layer_index as usize);
         let filters = &self.weights;
         let (constants_0, constants_1) = &self.constants;
+        let (constants_0_gradient, constants_1_gradient) = &self.constants_gradient;
         let ts = quote! {
             #filters_ident : #filters,
             #constants_field_name : (#constants_0, #constants_1),
+            #filters_gradient_ident : array::from_fn(|_|SMatrix::from_fn(|_,_|array::from_fn(|_|0i32))),
+            #constants_gradient_field_name : (#constants_0_gradient, #constants_1_gradient),
         };
         ts.to_tokens(declarations);
     }
@@ -204,6 +235,10 @@ impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
     fn train_ops(&self, backward: &mut TokenStream2) {
         let weights_ident: syn::Expr = {
             let field_ident = format_ident!("weights{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
+        let weights_gradient_ident: syn::Expr = {
+            let field_ident = format_ident!("weights{}_gradient", self.layer_index as usize);
             parse_quote!(self.#field_ident)
         };
         let output_ident = if self.layer_index >= 0 {
@@ -220,6 +255,10 @@ impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
             let field_ident = format_ident!("constants{}", self.layer_index as usize);
             parse_quote!(self.#field_ident)
         };
+        let constants_gradient_ident: syn::Expr = {
+            let field_ident = format_ident!("constants{}_gradient", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
         let activation = self.fused_activation;
         let view_padding = self.view_padding;
         let (strides_0, strides_1) = self.strides;
@@ -231,8 +270,10 @@ impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
         let prepend = quote! {
             let backward_gradient = microflow::gradient_depthwise_conv_2d::update_grad_depthwise_conv_2d(
                 &#input_ident,
-                &mut #weights_ident,
-                &mut #constants_ident,
+                &#weights_ident,
+                &mut #weights_gradient_ident,
+                &#constants_ident,
+                &mut #constants_gradient_ident,
                 #output_ident,
                 backward_gradient,
                 #activation,
@@ -249,6 +290,39 @@ impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
         prepend.to_tokens(&mut ts);
         ts.extend(backward.clone());
         *backward = ts;
+    }
+    fn update_ops(&self, updates: &mut TokenStream2) {
+        let weights_ident: syn::Expr = {
+            let field_ident = format_ident!("weights{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
+        let weights_gradient_ident: syn::Expr = {
+            let field_ident = format_ident!("weights{}_gradient", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
+        let constants_ident: syn::Expr = {
+            let field_ident = format_ident!("constants{}", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
+        let constants_gradient_ident: syn::Expr = {
+            let field_ident = format_ident!("constants{}_gradient", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
+        let update = quote! {
+            microflow::update_layer::update_weights_4D(
+                &mut #weights_ident,
+                &#weights_gradient_ident,
+                batch_size,
+                learning_rate,
+            );
+            microflow::update_layer::update_weights_2D_float(
+                &mut #constants_ident.0,
+                &#constants_gradient_ident.0,
+                batch_size,
+                learning_rate,
+            );
+        };
+        update.to_tokens(updates);
     }
 }
 impl<T: TokenQuantized> ToTokens for TokenDepthwiseConv2D<T> {
