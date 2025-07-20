@@ -14,7 +14,7 @@ pub fn update_grad_fully_connected<
     const WEIGHTS_COLS: usize,
 >(
     input: &Tensor2D<T, INPUT_ROWS, INPUT_COLS, 1>,
-    output: Tensor2D<T, INPUT_ROWS, WEIGHTS_COLS, 1>,
+    output: &Tensor2D<T, INPUT_ROWS, WEIGHTS_COLS, 1>,
     weights: &Tensor2D<T, INPUT_COLS, WEIGHTS_COLS, 1>,
     weights_gradient: &mut Buffer2D<i32, INPUT_COLS, WEIGHTS_COLS>,
     constants: &(

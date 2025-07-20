@@ -175,7 +175,7 @@ impl<T: TokenQuantized> TokenFullyConnected<T> {
                 |_, _| 0f32,
             )),
             0f32,
-            TokenBuffer2D::from(DMatrix::from_fn(weights.shape[0], 1, |_, _| 0i32)),
+            TokenBuffer2D::from(DMatrix::from_fn(1, weights.shape[1], |_, _| 0i32)),
             0i32,
         )
     }
@@ -185,6 +185,8 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
         let filters_ident = format_ident!("weights{}", self.layer_index as usize);
         let filters_gradient_ident = format_ident!("weights{}_gradient", self.layer_index as usize);
         let filters_type = self.weights.type_tokens();
+        let dim_weights_0 = self.weights.shape[0];
+        let dim_weights_1 = self.weights.shape[1];
         let constants_field_name = format_ident!("constants{}", self.layer_index as usize);
         let constants_gradient_field_name =
             format_ident!("constants{}_gradient", self.layer_index as usize);
@@ -207,7 +209,7 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
             #filters_ident: #filters_type
         };
         let filters_gradient_field: syn::Field = syn::parse_quote! {
-            #filters_gradient_ident: #filters_type
+            #filters_gradient_ident: nalgebra::SMatrix<i32,#dim_weights_0,#dim_weights_1>
         };
         match &mut attrs.fields {
             syn::Fields::Named(ref mut fields_named) => {
@@ -246,6 +248,10 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
             let field_ident = format_ident!("weights{}", self.layer_index as usize);
             parse_quote!(self.#field_ident)
         };
+        let weights_gradient_ident: syn::Expr = {
+            let field_ident = format_ident!("weights{}_gradient", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
         let output_ident = if self.layer_index >= 0 {
             format_ident!("input{}", self.layer_index as usize)
         } else {
@@ -262,12 +268,18 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
             let field_ident = format_ident!("constants{}", self.layer_index as usize);
             parse_quote!(self.#field_ident)
         };
+        let constants_gradient_ident: syn::Expr = {
+            let field_ident = format_ident!("constants{}_gradient", self.layer_index as usize);
+            parse_quote!(self.#field_ident)
+        };
         let prepend = quote! {
-            let backward_gradient = crate::gradient_fully_connected::update_grad_fully_connected(
+            let backward_gradient = microflow::gradient_fully_connected::update_grad_fully_connected(
                 &#input_ident,
-                #output_ident,
-                &mut #weights_ident,
-                &mut #constants_ident,
+                & #output_ident,
+                & #weights_ident,
+                &mut #weights_gradient_ident,
+                & #constants_ident,
+                &mut #constants_gradient_ident,
                 #activation,
                 backward_gradient,
                 #bias_scale,
@@ -358,17 +370,17 @@ impl<T: TokenQuantized> ToTokens for TokenFullyConnected<T> {
         } else {
             quote! {}
         };
-        let output_name = if self.layer_index >= 0 {
+        let output_name = if self.layer_index >= 0 && self.train {
             format_ident!("input{}", self.layer_index as usize)
         } else {
             format_ident!("input")
         };
-        let input_name = if self.layer_index > 0 {
+        let input_name = if self.layer_index > 0 && self.train {
             format_ident!("input{}", (self.layer_index - 1) as usize)
         } else {
             format_ident!("input")
         };
-        let func_name: syn::Path = if self.layer_index >= 0 {
+        let func_name: syn::Path = if self.layer_index >= 0 && self.train {
             parse_quote!(microflow::ops::fully_connected_borrow)
         } else {
             parse_quote!(microflow::ops::fully_connected)
@@ -379,7 +391,7 @@ impl<T: TokenQuantized> ToTokens for TokenFullyConnected<T> {
             let #output_name: microflow::tensor::Tensor2D<_, #(#output_shape),*, 1usize> =
                 #func_name(
                     #reference_tok (#input_name #reshape),
-                    &#weights_ident,
+                    & #weights_ident,
                     [#output_scale],
                     [#output_zero_point],
                     microflow::ops::FullyConnectedOptions {

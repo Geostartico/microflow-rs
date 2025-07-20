@@ -320,6 +320,8 @@ impl<T: TokenQuantized> TrainToTokens for TokenConv2D<T> {
                 batch_size,
                 learning_rate,
             );
+            #weights_gradient_ident = array::from_fn(|_|SMatrix::from_fn(|_,_|array::from_fn(|_|0i32)));
+            #constants_gradient_ident.0 = SMatrix::zeros();
             // println!("gradient weights: {}",weight_gradient.iter().fold(String::new(), |accarr, batch|accarr + &batch.map(|el|el.iter().fold(String::new(),|sum, el1|sum +" "+ &el1.to_string())).to_string()));
             // println!("gradient input: {}",backward_gradient[0].map(|el|el.iter().fold(String::new(),|sum, el1|sum +" " +&el1.to_string())));
             // println!("mean gradient conv: {}",weight_gradient[0].map(|el|el.iter().fold(0f32,|sum, el1|sum+(*el1 as f32).abs() / el.len() as f32)).mean());

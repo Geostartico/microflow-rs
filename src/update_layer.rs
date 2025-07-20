@@ -106,7 +106,7 @@ pub fn mse_loss<T: Quantized, const ROWS: usize, const COLS: usize>(
 
 pub fn mse_grad<T: Trainable, const ROWS: usize, const COLS: usize>(
     output_p: &Tensor2D<T, ROWS, COLS, 1>,
-    output_gt: Tensor2D<T, ROWS, COLS, 1>,
+    output_gt: &Tensor2D<T, ROWS, COLS, 1>,
 ) -> Buffer2D<T, ROWS, COLS> {
     SMatrix::from_fn(|i, j| output_p.buffer[(i, j)].saturating_sub(output_gt.buffer[(i, j)]))
 }

@@ -40,7 +40,14 @@ pub fn fully_connected<
         i32,
     ),
 ) -> Tensor2D<T, INPUT_ROWS, WEIGHTS_COLS, 1> {
-    fully_connected_borrow(&input, weights, output_scale, output_zero_point, options, constants)
+    fully_connected_borrow(
+        &input,
+        weights,
+        output_scale,
+        output_zero_point,
+        options,
+        constants,
+    )
 }
 /// Performs the FullyConnected operation.
 /// Returns a 2-dimensional output tensor containing the result of the operation.

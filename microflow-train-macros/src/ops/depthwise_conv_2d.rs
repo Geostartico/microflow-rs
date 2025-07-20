@@ -321,6 +321,8 @@ impl<T: TokenQuantized> TrainToTokens for TokenDepthwiseConv2D<T> {
                 batch_size,
                 learning_rate,
             );
+            #weights_gradient_ident = array::from_fn(|_|SMatrix::from_fn(|_,_|array::from_fn(|_|0i32)));
+            #constants_gradient_ident.0 = SMatrix::zeros();
         };
         update.to_tokens(updates);
     }
