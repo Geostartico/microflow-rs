@@ -285,6 +285,10 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
                 #bias_scale,
                 learning_rate,
             );
+            // println!("output: {}",#output_ident.buffer);
+            // println!("input: {}",#input_ident.buffer);
+            // println!("input_zero_point: {}",#input_ident.zero_point[0]);
+            // println!("weights_gradient: {}",#weights_gradient_ident);
         };
         let mut ts = TokenStream2::new();
         prepend.to_tokens(&mut ts);
@@ -325,6 +329,10 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
                 batch_size,
                 learning_rate,
             );
+            println!("gradient bias:{}",#constants_gradient_ident.0[0]);
+            println!("bias:{}",#constants_ident.0[0]);
+            #weights_gradient_ident = nalgebra::SMatrix::zeros();
+            #constants_gradient_ident.0 = nalgebra::SMatrix::zeros();
             // println!("gradient weights: {}",weight_gradient.iter().fold(String::new(), |accarr, batch|accarr + &batch.map(|el|el.iter().fold(String::new(),|sum, el1|sum +" "+ &el1.to_string())).to_string()));
             // println!("gradient input: {}",backward_gradient[0].map(|el|el.iter().fold(String::new(),|sum, el1|sum +" " +&el1.to_string())));
             // println!("mean gradient conv: {}",weight_gradient[0].map(|el|el.iter().fold(0f32,|sum, el1|sum+(*el1 as f32).abs() / el.len() as f32)).mean());

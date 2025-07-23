@@ -59,6 +59,7 @@ impl<T: TokenQuantized> ToTokens for TokenMse<T> {
         let ts = quote! {
             let backward_gradient =
                 microflow::update_layer::mse_grad(& #output_name, output_gt);
+            // println!("mse grad = {}", backward_gradient);
         };
         ts.to_tokens(tokens);
     }

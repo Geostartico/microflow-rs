@@ -17,11 +17,12 @@ pub fn update_grad_depthwise_conv_2d<
     const INPUT_CHANS: usize,
     const WEIGHTS_ROWS: usize,
     const WEIGHTS_COLS: usize,
+    const WEIGHTS_CHANS: usize,
     const FILTER_QUANTS: usize,
 >(
     input: &Tensor4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS, 1>,
-    weights: &Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS, FILTER_QUANTS>,
-    weights_gradient: &mut Buffer4D<i32, 1, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS>,
+    weights: &Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, WEIGHTS_CHANS, FILTER_QUANTS>,
+    weights_gradient: &mut Buffer4D<i32, 1, WEIGHTS_ROWS, WEIGHTS_COLS, WEIGHTS_CHANS>,
     constants: &(
         Buffer2D<f32, INPUT_CHANS, 1>,
         Buffer2D<f32, FILTER_QUANTS, 1>,
@@ -30,8 +31,8 @@ pub fn update_grad_depthwise_conv_2d<
         Buffer2D<f32, INPUT_CHANS, 1>,
         Buffer2D<f32, FILTER_QUANTS, 1>,
     ),
-    outputs: Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS, 1>,
-    output_grad: Buffer4D<i32, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS>,
+    outputs: Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, WEIGHTS_CHANS, 1>,
+    output_grad: Buffer4D<i32, 1, OUTPUT_ROWS, OUTPUT_COLS, WEIGHTS_CHANS>,
     activation: FusedActivation,
     strides: (usize, usize),
     padding: TensorViewPadding,
@@ -85,12 +86,13 @@ pub fn grad_depthwise_conv_2d_inputs<
     const INPUT_CHANS: usize,
     const WEIGHTS_ROWS: usize,
     const WEIGHTS_COLS: usize,
+    const WEIGHTS_CHANS: usize,
     const FILTER_QUANTS: usize,
 >(
     input: &Tensor4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS, 1>,
-    weights: &Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS, FILTER_QUANTS>,
-    outputs: &Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS, 1>,
-    output_grad: &Buffer4D<i32, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS>,
+    weights: &Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, WEIGHTS_CHANS, FILTER_QUANTS>,
+    outputs: &Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, WEIGHTS_CHANS, 1>,
+    output_grad: &Buffer4D<i32, 1, OUTPUT_ROWS, OUTPUT_COLS, WEIGHTS_CHANS>,
     activation: &FusedActivation,
     strides: (usize, usize),
     padding: TensorViewPadding,
@@ -114,7 +116,7 @@ pub fn grad_depthwise_conv_2d_inputs<
                 padding,
                 strides,
             );
-            for output_channel in 0..INPUT_CHANS {
+            for output_channel in 0..WEIGHTS_CHANS {
                 let val = outputs.buffer[0][(output_row, output_col)][output_channel]
                     .saturating_sub(outputs.zero_point[0]);
                 if !(match activation {
@@ -148,9 +150,12 @@ pub fn grad_depthwise_conv_2d_inputs<
                             .to_superset();
                         let tmp: i32 = weights.buffer[0][(filter_row, filter_col)][output_channel]
                             .to_superset();
-                        accum[0][cur_coord][output_channel] = accum[0][cur_coord][output_channel]
-                            + (tmp - zero_point)
-                                * output_grad[0][(output_row, output_col)][output_channel]
+                        accum[0][cur_coord][if output_channel <= INPUT_CHANS {
+                            output_channel
+                        } else {
+                            0
+                        }] += (tmp - zero_point)
+                            * output_grad[0][(output_row, output_col)][output_channel]
                     }
                 }
             }
@@ -169,18 +174,19 @@ pub fn grad_depthwise_conv_2d_weights<
     const INPUT_CHANS: usize,
     const WEIGHTS_ROWS: usize,
     const WEIGHTS_COLS: usize,
+    const WEIGHTS_CHANS: usize,
     const WEIGHTS_QUANTS: usize,
 >(
     input: &Tensor4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS, 1>,
-    weights: &Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS, WEIGHTS_QUANTS>,
-    outputs: &Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS, 1>,
-    output_grad: &Buffer4D<i32, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS>,
+    weights: &Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, WEIGHTS_CHANS, WEIGHTS_QUANTS>,
+    outputs: &Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, WEIGHTS_CHANS, 1>,
+    output_grad: &Buffer4D<i32, 1, OUTPUT_ROWS, OUTPUT_COLS, WEIGHTS_CHANS>,
     activation: &FusedActivation,
     strides: (usize, usize),
     padding: TensorViewPadding,
-) -> Buffer4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS> {
-    let mut accum: Buffer4D<i32, 1, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS> =
-        array::from_fn(|_| SMatrix::from_fn(|_, _| [0i32; INPUT_CHANS]));
+) -> Buffer4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, WEIGHTS_CHANS> {
+    let mut accum: Buffer4D<i32, 1, WEIGHTS_ROWS, WEIGHTS_COLS, WEIGHTS_CHANS> =
+        array::from_fn(|_| SMatrix::from_fn(|_, _| [0i32; WEIGHTS_CHANS]));
     let normalization_param = output_grad.iter().fold(0f32, |acc, val| {
         acc + val.iter().fold(0f32, |acc1, val1| {
             acc1 + val1
@@ -207,8 +213,14 @@ pub fn grad_depthwise_conv_2d_weights<
                     for filter_cols in 0..WEIGHTS_COLS {
                         let zero_point: i32 = input.zero_point[0].to_superset();
                         if view.mask[(filter_row, filter_cols)] {
-                            let tmp: i32 = view.buffer[(filter_row, filter_cols)][output_channel]
-                                .to_superset();
+                            let tmp: i32 = view.buffer[(filter_row, filter_cols)][if output_channel
+                                <= INPUT_CHANS
+                            {
+                                output_channel
+                            } else {
+                                0
+                            }]
+                            .to_superset();
                             accum[0][(filter_row, filter_cols)][output_channel] = accum[0]
                                 [(filter_row, filter_cols)][output_channel]
                                 + (tmp - zero_point)
@@ -235,12 +247,13 @@ pub fn grad_depthwise_conv_2d_bias<
     const INPUT_CHANS: usize,
     const WEIGHTS_ROWS: usize,
     const WEIGHTS_COLS: usize,
+    const WEIGHTS_CHANS: usize,
     const FILTERS_QUANTS: usize,
 >(
     input: &Tensor4D<T, 1, INPUT_ROWS, INPUT_COLS, INPUT_CHANS, 1>,
-    weights: &Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, INPUT_CHANS, FILTERS_QUANTS>,
-    outputs: &Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS, 1>,
-    output_grad: &Buffer4D<i32, 1, OUTPUT_ROWS, OUTPUT_COLS, INPUT_CHANS>,
+    weights: &Tensor4D<T, 1, WEIGHTS_ROWS, WEIGHTS_COLS, WEIGHTS_CHANS, FILTERS_QUANTS>,
+    outputs: &Tensor4D<T, 1, OUTPUT_ROWS, OUTPUT_COLS, WEIGHTS_CHANS, 1>,
+    output_grad: &Buffer4D<i32, 1, OUTPUT_ROWS, OUTPUT_COLS, WEIGHTS_CHANS>,
     activation: &FusedActivation,
     bias_scale: [f32; FILTERS_QUANTS],
 ) -> SVector<f32, INPUT_CHANS> {

@@ -6,6 +6,7 @@ use crate::{
 };
 use libm::logf;
 use nalgebra::SMatrix;
+use simba::scalar::SupersetOf;
 
 pub fn update_weights_2D<T: Trainable, const ROWS: usize, const COLS: usize>(
     weights: &mut Tensor2D<T, ROWS, COLS, 1>,
@@ -64,7 +65,7 @@ pub fn accumulate_gradient_2D<T: Trainable, const ROWS: usize, const COLS: usize
     for row in 0..ROWS {
         for col in 0..COLS {
             let tmp: i32 = current_gradient[(row, col)].to_superset();
-            weights_gradient[(row, col)] = tmp.saturating_add(weights_gradient[(row, col)]);
+            weights_gradient[(row, col)] += tmp;
         }
     }
 }
@@ -107,8 +108,10 @@ pub fn mse_loss<T: Quantized, const ROWS: usize, const COLS: usize>(
 pub fn mse_grad<T: Trainable, const ROWS: usize, const COLS: usize>(
     output_p: &Tensor2D<T, ROWS, COLS, 1>,
     output_gt: &Tensor2D<T, ROWS, COLS, 1>,
-) -> Buffer2D<T, ROWS, COLS> {
-    SMatrix::from_fn(|i, j| output_p.buffer[(i, j)].saturating_sub(output_gt.buffer[(i, j)]))
+) -> Buffer2D<i32, ROWS, COLS> {
+    SMatrix::from_fn(|i, j| {
+        i32::from_subset(&output_p.buffer[(i, j)]) - i32::from_subset(&output_gt.buffer[(i, j)])
+    })
 }
 pub fn crossentropy_grad<T: Trainable, const ROWS: usize, const COLS: usize>(
     input: &Tensor2D<T, ROWS, COLS, 1>,
