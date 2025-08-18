@@ -1,20 +1,20 @@
 use libm::sinf;
 use microflow_train_macros::model;
-use nalgebra::{base::Matrix, base::SMatrix, matrix};
+use nalgebra::{matrix, Matrix, SMatrix};
 use ndarray::{Array3, Array4};
 use ndarray_npy::read_npy;
-use rand::{rng, seq::SliceRandom, Rng};
+use rand::{rng, seq::SliceRandom, thread_rng, Rng};
 use std::fs::{read_dir, File};
 // #[model("models/train/sine.tflite", 1, "mse", false)]
 // struct Sine {}
-// #[model("models/train/lenet.tflite", 1, "mse", false)]
-// struct LeNet {}
-#[model("models/train/speech_small_softmax.tflite", 2, "crossentropy", true)]
-struct Speech {}
+#[model("models/train/lenet.tflite", 2, "crossentropy", true)]
+struct LeNet {}
+// #[model("models/train/speech_small.tflite", 1, "crossentropy", false)]
+// struct Speech {}
 
 fn main() {
-    let mut label_0: Vec<[SMatrix<[f32; 1], 125, 17>; 1]> =
-        read_dir("datasets/dataset_fine_speech/label_0")
+    let mut label_0: Vec<[SMatrix<[f32; 1], 28, 28>; 1]> =
+        read_dir("datasets/fine_dataset_lenet/label_0")
             .unwrap()
             .filter(|el| el.is_ok())
             .map(|el| {
@@ -29,8 +29,8 @@ fn main() {
             })
             .collect();
     label_0.shuffle(&mut rng());
-    let mut label_1: Vec<[SMatrix<[f32; 1], 125, 17>; 1]> =
-        read_dir("datasets/dataset_fine_speech/label_1")
+    let mut label_1: Vec<[SMatrix<[f32; 1], 28, 28>; 1]> =
+        read_dir("datasets/fine_dataset_lenet/label_1")
             .unwrap()
             .filter(|el| el.is_ok())
             .map(|el| {
@@ -50,20 +50,24 @@ fn main() {
         label_0.split_off((label_0.len() as f32 * (1f32 - validation_percentage)).round() as usize);
     let validation_1 =
         label_1.split_off((label_1.len() as f32 * (1f32 - validation_percentage)).round() as usize);
-    let mut model = Speech::new();
-    let epochs = 25;
-    let batch = 100;
+    let mut model = LeNet::new();
+    let epochs = 5;
+    let batch = 50;
     let learning_rate = 0.01;
     let mut train_vec: Vec<_> = label_0
         .into_iter()
         .map(|x| (x, 0))
         .chain(label_1.into_iter().map(|x| (x, 1)))
         .collect();
-    let validation_vec: Vec<_> = validation_0
+    train_vec.shuffle(&mut rng());
+    train_vec = train_vec.drain(..2000).collect();
+    let mut validation_vec: Vec<_> = validation_0
         .into_iter()
         .map(|x| (x, 0))
         .chain(validation_1.into_iter().map(|x| (x, 1)))
         .collect();
+    validation_vec.shuffle(&mut rng());
+    let validation_vec: Vec<_> = validation_vec.drain(..200).collect();
     let output_scale = 0.00390625;
     let output_zero_point = -128i8;
     println!("train elements {}", train_vec.len());
@@ -72,16 +76,11 @@ fn main() {
         .buffer
         .map(|el| if el >= 126 || el <= -126 { 1 } else { 0 })
         .fold(0, |acc, el| acc + el);
-    println!("saturated params initially {}", saturated);
     let correct = validation_vec
         .iter()
         .map(|sample| {
             let result = model.predict(sample.0);
-
-            let exps: Vec<f32> = result.iter().map(|&x| (x).exp()).collect();
-            let sum: f32 = exps.iter().sum();
-            let softm: Vec<f32> = exps.iter().map(|&x| x / sum).collect();
-            println!("validation result, {},{}", softm[0], softm[1]);
+            println!("validation result: {},{}", result[0], result[1]);
             if sample.1 == 1 && result[1] > result[0] {
                 1
             } else if sample.1 == 0 && result[0] > result[1] {
@@ -92,12 +91,12 @@ fn main() {
         })
         .reduce(|acc, val| acc + val)
         .unwrap();
-    println!("validation accuracy : {}/{}", correct, validation_vec.len());
+    println!("correct: {}", correct);
+    println!("saturated params initially {}", saturated);
     for _ in 0..epochs {
         let initial = model.weights0.buffer.clone().cast::<i32>();
         train_vec.shuffle(&mut rng());
         for (index, sample) in train_vec.iter().enumerate() {
-            // println!("expected_output: {}", sample.1);
             let y = if sample.1 == 0 {
                 matrix![1f32, 0f32]
             } else {
@@ -106,16 +105,10 @@ fn main() {
             let output =
                 microflow::tensor::Tensor2D::quantize(y, [output_scale], [output_zero_point]);
 
-            let out = model.predict_train(sample.0, &output, learning_rate);
-            // println!(
-            //     "output net: {}",
-            //     microflow::tensor::Tensor2D::quantize(out, [output_scale], [output_zero_point])
-            //         .buffer
-            // );
-            // println!("gradient: {}", model.weights0_gradient.view((0, 0), (4, 2)));
-            // panic!();
+            // println!("output: {}", output.buffer);
+            model.predict_train(sample.0, &output, learning_rate);
             if index % batch == 0 {
-                // println!("final_gradient: {}", model.weights0_gradient);
+                println!("batch: {}", index / batch);
                 model.update_layers(batch, learning_rate);
             }
         }
@@ -124,11 +117,7 @@ fn main() {
             .iter()
             .map(|sample| {
                 let result = model.predict(sample.0);
-
-                let exps: Vec<f32> = result.iter().map(|&x| (x).exp()).collect();
-                let sum: f32 = exps.iter().sum();
-                let softm: Vec<f32> = exps.iter().map(|&x| x / sum).collect();
-                println!("validation result, {},{}", softm[0], softm[1]);
+                println!("result: {}, {}", result[0], result[1]);
                 if sample.1 == 1 && result[1] > result[0] {
                     1
                 } else if sample.1 == 0 && result[0] > result[1] {

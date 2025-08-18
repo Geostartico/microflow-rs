@@ -1,3 +1,5 @@
+use core::{arch::x86_64::_MM_HINT_T0, i32};
+
 use crate::{
     buffer::{Buffer2D, Buffer4D},
     ops::softmax_borrow,
@@ -6,7 +8,7 @@ use crate::{
 };
 use libm::logf;
 use nalgebra::SMatrix;
-use simba::scalar::SupersetOf;
+use simba::scalar::{SubsetOf, SupersetOf};
 
 pub fn update_weights_2D<T: Trainable, const ROWS: usize, const COLS: usize>(
     weights: &mut Tensor2D<T, ROWS, COLS, 1>,
@@ -14,12 +16,116 @@ pub fn update_weights_2D<T: Trainable, const ROWS: usize, const COLS: usize>(
     batch_size: usize,
     learning_rate: f32,
 ) {
-    weights.buffer = SMatrix::from_fn(|i, j| {
-        let tmp: f32 = weights_gradient[(i, j)] as f32;
-        weights.buffer[(i, j)].saturating_sub(
-            T::from_superset(&(learning_rate * tmp / batch_size as f32).round()).unwrap(),
-        )
-    });
+    for i in 0..ROWS {
+        for j in 0..COLS {
+            let tmp: f32 = weights_gradient[(i, j)] as f32;
+            weights.buffer[(i, j)] = weights.buffer[(i, j)].saturating_sub(
+                T::from_superset(&(learning_rate * tmp / batch_size as f32).round()).unwrap(),
+            );
+        }
+    }
+}
+pub fn update_weights_perc_2D<
+    T: Trainable,
+    const ROWS: usize,
+    const COLS: usize,
+    const PERC: usize,
+>(
+    weights: &mut Tensor2D<T, ROWS, COLS, 1>,
+    weights_gradient: &Buffer2D<i32, ROWS, COLS>,
+    batch_size: usize,
+    learning_rate: f32,
+) {
+    let mut gr = [(0, (0, 0)); PERC];
+    for i in 0..ROWS {
+        for j in 0..COLS {
+            let cur = weights_gradient[(i, j)].abs();
+            let mut insert = PERC + 1;
+            for k in (1..PERC + 1).rev() {
+                if cur > gr[k - 1].0 {
+                    if k < PERC {
+                        gr[k] = gr[k - 1];
+                    }
+                    insert = k - 1;
+                } else {
+                    break;
+                }
+            }
+            if insert < PERC {
+                gr[insert] = (cur, (i, j));
+            }
+        }
+    }
+    let max = gr[0].0;
+    let scale = (127f32 * batch_size as f32) / max as f32;
+    for (_, (row, col)) in gr {
+        let tmp: f32 = weights_gradient[(row, col)] as f32;
+        let tmp = learning_rate * tmp as f32 * scale / batch_size as f32;
+        weights.buffer[(row, col)] = weights.buffer[(row, col)]
+            // .saturating_sub(T::from_superset(&(tmp.abs().ceil() * tmp.signum())).unwrap())
+            .saturating_sub(T::from_superset(&tmp).unwrap())
+    }
+}
+pub fn update_weights_max_2D<T: Trainable, const ROWS: usize, const COLS: usize>(
+    weights: &mut Tensor2D<T, ROWS, COLS, 1>,
+    weights_gradient: &Buffer2D<i32, ROWS, COLS>,
+    batch_size: usize,
+    learning_rate: f32,
+) {
+    let mut max = 0;
+    for i in 0..ROWS {
+        for j in 0..COLS {
+            let cur = weights_gradient[(i, j)].abs();
+            if cur > max {
+                max = cur;
+            }
+        }
+    }
+    let scale = (127f32 * batch_size as f32) / max as f32;
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            let tmp: f32 = weights_gradient[(row, col)] as f32;
+            let tmp = learning_rate * tmp as f32 * scale / batch_size as f32;
+            weights.buffer[(row, col)] = weights.buffer[(row, col)]
+                // .saturating_sub(T::from_superset(&(tmp.abs().ceil() * tmp.signum())).unwrap())
+                .saturating_sub(T::from_superset(&tmp).unwrap())
+        }
+    }
+}
+pub fn update_weights_clip_2D<T: Trainable, const ROWS: usize, const COLS: usize>(
+    weights: &mut Tensor2D<T, ROWS, COLS, 1>,
+    weights_gradient: &Buffer2D<i32, ROWS, COLS>,
+    batch_size: usize,
+    learning_rate: f32,
+) {
+    let mut min_val = i32::MAX;
+    for i in 0..ROWS {
+        for j in 0..COLS {
+            let cur = weights_gradient[(i, j)].abs();
+            if cur < min_val {
+                min_val = cur;
+            }
+        }
+    }
+    let scale = (batch_size as f32) / min_val as f32;
+    let clip_value = min_val as f32 * 1000f32;
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            let mut tmp: f32 = weights_gradient[(row, col)] as f32;
+
+            let tmp = learning_rate
+                * (if tmp < clip_value {
+                    tmp as f32
+                } else {
+                    clip_value
+                })
+                * scale
+                / batch_size as f32;
+            weights.buffer[(row, col)] = weights.buffer[(row, col)]
+                // .saturating_sub(T::from_superset(&(tmp.abs().ceil() * tmp.signum())).unwrap())
+                .saturating_sub(T::from_superset(&tmp).unwrap())
+        }
+    }
 }
 pub fn update_weights_2D_float<const ROWS: usize, const COLS: usize>(
     weights: &mut Buffer2D<f32, ROWS, COLS>,
@@ -47,16 +153,66 @@ pub fn update_weights_4D<
     batch_size: usize,
     learning_rate: f32,
 ) {
-    weights.buffer = core::array::from_fn(|batch| {
-        SMatrix::from_fn(|i, j| {
-            core::array::from_fn(|channel| {
-                let tmp: f32 = weights_gradient[batch][(i, j)][channel] as f32;
-                weights.buffer[batch][(i, j)][channel].saturating_sub(
-                    T::from_superset(&(learning_rate * tmp / batch_size as f32).round()).unwrap(),
-                )
-            })
-        })
-    })
+    for batch in 0..BATCHES {
+        for i in 0..ROWS {
+            for j in 0..COLS {
+                for channel in 0..CHANS {
+                    let tmp: f32 = weights_gradient[batch][(i, j)][channel] as f32;
+                    weights.buffer[batch][(i, j)][channel] = weights.buffer[batch][(i, j)][channel]
+                        .saturating_sub(
+                            T::from_superset(&(learning_rate * tmp / batch_size as f32).round())
+                                .unwrap(),
+                        );
+                }
+            }
+        }
+    }
+}
+pub fn update_weights_perc_4D<
+    T: Trainable,
+    const BATCHES: usize,
+    const ROWS: usize,
+    const COLS: usize,
+    const CHANS: usize,
+    const QUANTS: usize,
+    const PERC: usize,
+>(
+    weights: &mut Tensor4D<T, BATCHES, ROWS, COLS, CHANS, QUANTS>,
+    weights_gradient: &Buffer4D<i32, BATCHES, ROWS, COLS, CHANS>,
+    batch_size: usize,
+    learning_rate: f32,
+) {
+    let mut gr = [(0, (0, 0, 0, 0)); PERC];
+    for batch in 0..BATCHES {
+        for i in 0..ROWS {
+            for j in 0..COLS {
+                for channel in 0..CHANS {
+                    let cur = weights_gradient[batch][(i, j)][channel].abs();
+                    let mut insert = PERC + 1;
+                    for k in (1..PERC + 1).rev() {
+                        if cur > gr[k - 1].0 {
+                            if k < PERC {
+                                gr[k] = gr[k - 1];
+                            }
+                            insert = k - 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if insert < PERC {
+                        gr[insert] = (cur, (batch, i, j, channel));
+                    }
+                }
+            }
+        }
+    }
+    for (_, (batch, i, j, channel)) in gr {
+        let tmp: f32 = weights_gradient[batch][(i, j)][channel] as f32;
+        weights.buffer[batch][(i, j)][channel] = weights.buffer[batch][(i, j)][channel]
+            .saturating_sub(
+                T::from_superset(&(learning_rate * tmp / batch_size as f32).round()).unwrap(),
+            );
+    }
 }
 pub fn accumulate_gradient_2D<T: Trainable, const ROWS: usize, const COLS: usize>(
     current_gradient: &Buffer2D<T, ROWS, COLS>,
@@ -120,11 +276,14 @@ pub fn crossentropy_grad<T: Trainable, const ROWS: usize, const COLS: usize>(
     label: &Tensor2D<T, ROWS, COLS, 1>,
 ) -> Buffer2D<i32, ROWS, COLS> {
     let softm = softmax_borrow(&input, [output_scale], [output_zero_point]);
+
+    // let scale = output_scale.powi(2) / input.scale[0].powi(2);
     SMatrix::from_fn(|i, j| {
         let tmp1: i32 = T::to_superset(&softm.buffer[(i, j)]);
         let tmp2: i32 = label.buffer[(i, j)].to_superset();
         let diff: i32 = tmp1 - tmp2;
         // T::from_superset(&(output_scale * diff / (input.scale[0].powi(2)))).unwrap()
+        // i32::from_superset_unchecked(&(f32::from_subset(&diff) * scale))
         diff
     })
 }

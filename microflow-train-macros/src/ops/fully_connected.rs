@@ -285,6 +285,7 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
                 #bias_scale,
                 learning_rate,
             );
+            // println!("input: {}, {}, {}", #input_ident.buffer.view((0, 0), (1, 4)),#input_ident.zero_point[0], #input_ident.scale[0]);
             // println!("output: {}",#output_ident.buffer);
             // println!("input: {}",#input_ident.buffer);
             // println!("input_zero_point: {}",#input_ident.zero_point[0]);
@@ -316,8 +317,18 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
             let field_ident = format_ident!("constants{}_gradient", self.layer_index as usize);
             parse_quote!(self.#field_ident)
         };
+        let weights_size = self.weights.shape.iter().fold(1, |acc, el| acc * el);
+        let weights_shape_0 = self.weights.shape[0];
+        let weights_shape_1 = self.weights.shape[1];
+        let perc: usize = (weights_size as f32 * 0.25).floor() as usize;
         let update = quote! {
-            microflow::update_layer::update_weights_2D(
+            // microflow::update_layer::update_weights_2D(
+            //     &mut #weights_ident,
+            //     &#weights_gradient_ident,
+            //     batch_size,
+            //     learning_rate,
+            // );
+            microflow::update_layer::update_weights_max_2D(
                 &mut #weights_ident,
                 &#weights_gradient_ident,
                 batch_size,
@@ -329,8 +340,8 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
                 batch_size,
                 learning_rate,
             );
-            println!("gradient bias:{}",#constants_gradient_ident.0[0]);
-            println!("bias:{}",#constants_ident.0[0]);
+            // println!("gradient bias:{}",#constants_gradient_ident.0[0]);
+            // println!("bias:{}",#constants_ident.0[0]);
             #weights_gradient_ident = nalgebra::SMatrix::zeros();
             #constants_gradient_ident.0 = nalgebra::SMatrix::zeros();
             // println!("gradient weights: {}",weight_gradient.iter().fold(String::new(), |accarr, batch|accarr + &batch.map(|el|el.iter().fold(String::new(),|sum, el1|sum +" "+ &el1.to_string())).to_string()));

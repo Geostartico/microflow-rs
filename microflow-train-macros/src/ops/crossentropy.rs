@@ -64,6 +64,9 @@ impl<T: TokenQuantized> ToTokens for TokenCrossentropy<T> {
                     #output_scale,
                     #output_zero_point,
                     &output_gt);
+            // println!("output {}", #output_name.buffer);
+            // println!("output softmax{}", microflow::ops::softmax_borrow(&#output_name, [#output_scale], [#output_zero_point]).buffer);
+            // println!("output_gr {}", output_gt.buffer);
             // println!("loss {}", backward_gradient);
         };
         ts.to_tokens(tokens);
