@@ -102,28 +102,56 @@ pub fn update_weights_clip_2D<T: Trainable, const ROWS: usize, const COLS: usize
     for i in 0..ROWS {
         for j in 0..COLS {
             let cur = weights_gradient[(i, j)].abs();
-            if cur < min_val {
+            if cur < min_val && cur > 0 {
                 min_val = cur;
             }
         }
     }
     let scale = (batch_size as f32) / min_val as f32;
-    let clip_value = min_val as f32 * 1000f32;
+    let clip_value = min_val as f32 * 127f32;
     for row in 0..ROWS {
         for col in 0..COLS {
-            let mut tmp: f32 = weights_gradient[(row, col)] as f32;
+            let tmp: f32 = weights_gradient[(row, col)] as f32;
 
             let tmp = learning_rate
-                * (if tmp < clip_value {
+                * (if tmp.abs() < clip_value {
                     tmp as f32
                 } else {
-                    clip_value
+                    clip_value * tmp.signum()
                 })
                 * scale
                 / batch_size as f32;
             weights.buffer[(row, col)] = weights.buffer[(row, col)]
                 // .saturating_sub(T::from_superset(&(tmp.abs().ceil() * tmp.signum())).unwrap())
                 .saturating_sub(T::from_superset(&tmp).unwrap())
+        }
+    }
+}
+pub fn update_weights_clip_norm_2D<T: Trainable, const ROWS: usize, const COLS: usize>(
+    weights: &mut Tensor2D<T, ROWS, COLS, 1>,
+    weights_gradient: &Buffer2D<i32, ROWS, COLS>,
+    batch_size: usize,
+    learning_rate: f32,
+) {
+    let clip_val = 127f32;
+    let norm: f32 = libm::sqrtf(
+        weights_gradient
+            .iter()
+            .map(|el| (el / batch_size as i32) * (el / batch_size as i32))
+            .fold(0f32, |acc, el| acc + el as f32),
+    );
+    let scale = if norm > clip_val {
+        1024f32 / norm
+    } else {
+        1f32
+    };
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            let tmp: f32 = weights_gradient[(row, col)] as f32;
+
+            let tmp = learning_rate * tmp * scale / batch_size as f32;
+            weights.buffer[(row, col)] =
+                weights.buffer[(row, col)].saturating_sub(T::from_superset(&tmp).unwrap())
         }
     }
 }
@@ -167,6 +195,22 @@ pub fn update_weights_4D<
             }
         }
     }
+}
+pub fn update_constants_fully_connected<
+    T: Trainable,
+    const ROWS: usize,
+    const COLS: usize,
+    const QUANTS: usize,
+>(
+    weights: &Tensor2D<T, ROWS, COLS, QUANTS>,
+    constants: &mut (Buffer2D<f32, COLS, 1>, f32, Buffer2D<i32, 1, COLS>, i32),
+    input_zero_point: T,
+) {
+    constants.2 = Buffer2D::from(SMatrix::from_rows(&[&weights
+        .buffer
+        .cast::<i32>()
+        .row_sum()
+        * i32::from_subset(&input_zero_point)]));
 }
 pub fn update_weights_perc_4D<
     T: Trainable,

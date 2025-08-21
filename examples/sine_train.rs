@@ -35,8 +35,8 @@ fn main() {
         println!("epoch {}", e);
         for sample in 0..samples {
             let x = rng.random_range(0.0..(2.0 * std::f32::consts::PI));
-            let y = 0.5 * sinf(x);
-            // let y = x / 4f32;
+            // let y = 0.5 * sinf(x);
+            let y = x / 4f32;
             // println!("x unquantized: {x}");
             // println!("y unquantized: {y}");
             let output = microflow::tensor::Tensor2D::quantize(

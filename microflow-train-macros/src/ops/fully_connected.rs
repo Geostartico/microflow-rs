@@ -21,6 +21,7 @@ pub(crate) struct TokenFullyConnected<T: TokenQuantized> {
     pub(crate) reshape: bool,
     pub(crate) scale_bias: f32,
     pub(crate) layer_index: i32,
+    pub(crate) input_zero_point: T,
     pub(crate) train: bool,
 }
 
@@ -128,6 +129,7 @@ impl<T: TokenQuantized> TokenFullyConnected<T> {
             constants,
             index,
             layer_index,
+            input_zero_point: *input.zero_point.get(0).unwrap(),
             train: false,
         }
     }
@@ -286,7 +288,7 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
                 learning_rate,
             );
             // println!("input: {}, {}, {}", #input_ident.buffer.view((0, 0), (1, 4)),#input_ident.zero_point[0], #input_ident.scale[0]);
-            // println!("output: {}",#output_ident.buffer);
+            // println!("output net: {}",#output_ident.buffer);
             // println!("input: {}",#input_ident.buffer);
             // println!("input_zero_point: {}",#input_ident.zero_point[0]);
             // println!("weights_gradient: {}",#weights_gradient_ident);
@@ -320,6 +322,7 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
         let weights_size = self.weights.shape.iter().fold(1, |acc, el| acc * el);
         let weights_shape_0 = self.weights.shape[0];
         let weights_shape_1 = self.weights.shape[1];
+        let input_zero_point = self.input_zero_point;
         let perc: usize = (weights_size as f32 * 0.25).floor() as usize;
         let update = quote! {
             // microflow::update_layer::update_weights_2D(
@@ -328,7 +331,13 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
             //     batch_size,
             //     learning_rate,
             // );
-            microflow::update_layer::update_weights_max_2D(
+            // microflow::update_layer::update_weights_max_2D(
+            //     &mut #weights_ident,
+            //     &#weights_gradient_ident,
+            //     batch_size,
+            //     learning_rate,
+            // );
+            microflow::update_layer::update_weights_clip_norm_2D(
                 &mut #weights_ident,
                 &#weights_gradient_ident,
                 batch_size,
@@ -339,6 +348,11 @@ impl<T: TokenQuantized> TrainToTokens for TokenFullyConnected<T> {
                 &#constants_gradient_ident.0,
                 batch_size,
                 learning_rate,
+            );
+            microflow::update_layer::update_constants_fully_connected(
+                &#weights_ident,
+                &mut #constants_ident,
+                #input_zero_point
             );
             // println!("gradient bias:{}",#constants_gradient_ident.0[0]);
             // println!("bias:{}",#constants_ident.0[0]);

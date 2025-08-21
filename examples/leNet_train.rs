@@ -51,7 +51,7 @@ fn main() {
     let validation_1 =
         label_1.split_off((label_1.len() as f32 * (1f32 - validation_percentage)).round() as usize);
     let mut model = LeNet::new();
-    let epochs = 5;
+    let epochs = 25;
     let batch = 50;
     let learning_rate = 0.01;
     let mut train_vec: Vec<_> = label_0
@@ -71,6 +71,14 @@ fn main() {
     let output_scale = 0.00390625;
     let output_zero_point = -128i8;
     println!("train elements {}", train_vec.len());
+    println!(
+        "validation split baseline {}/{}",
+        &validation_vec
+            .iter()
+            .map(|el| el.1)
+            .fold(0, |acc, el| acc + el),
+        validation_vec.len()
+    );
     let saturated = model
         .weights0
         .buffer
@@ -106,10 +114,22 @@ fn main() {
                 microflow::tensor::Tensor2D::quantize(y, [output_scale], [output_zero_point]);
 
             // println!("output: {}", output.buffer);
-            model.predict_train(sample.0, &output, learning_rate);
+            let predicted_output = model.predict_train(sample.0, &output, learning_rate);
+            // println!(
+            //     "predicted output: {}",
+            //     microflow::tensor::Tensor2D::quantize(
+            //         predicted_output,
+            //         [output_scale],
+            //         [output_zero_point]
+            //     )
+            //     .buffer
+            // );
+            // println!("gradient: {}", model.weights0_gradient.view((0, 0), (4, 2)));
+            // panic!();
             if index % batch == 0 {
                 println!("batch: {}", index / batch);
                 model.update_layers(batch, learning_rate);
+                println!("new bias: {}", model.constants0.0)
             }
         }
         model.update_layers(batch, learning_rate);
